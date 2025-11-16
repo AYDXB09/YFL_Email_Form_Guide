@@ -1,128 +1,197 @@
-import os
+# email_sender.py
+#
+# Gmail API helper:
+#   - get_gmail_creds(): loads or performs manual OAuth, saving gmail_token.json
+#   - send_report_email(): sends HTML email with attachment
+#
+# It also wraps the body HTML in a minimal <html><head><style>...</style><body>...</body>
+# shell so the inline Div 3 table uses the same dark CSS as the full report.
+
 import base64
-import mimetypes
+from pathlib import Path
 from email.message import EmailMessage
+
+from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+OOB_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+
+# -------------------------------------------------------------------
+# CSS used for the inline email (matches the full HTML report look)
+# -------------------------------------------------------------------
+INLINE_EMAIL_CSS = """
+<style>
+body {
+  background:#020617;
+  color:#e5e7eb;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  padding:20px;
+  margin:0;
+}
+h1 {
+  margin:0 0 8px 0;
+}
+h2 {
+  margin:16px 0 8px 0;
+}
+p {
+  margin:0 0 12px 0;
+  color:#9ca3af;
+}
+table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:14px;
+}
+th,td {
+  padding:6px 8px;
+  border-bottom:1px solid #334155;
+}
+thead {
+  background:#0f172a;
+}
+tbody tr:nth-child(even) { background:#0b1120; }
+tbody tr:nth-child(odd)  { background:#111827; }
+td.form-cell { max-width:360px; }
+.gd-pos { color:#22c55e; font-weight:700; }
+.gd-neg { color:#ef4444; font-weight:700; }
+.gd-zero { color:#9ca3af; }
+.next-main { font-weight:700; display:block; }
+.next-meta { color:#9ca3af; font-size:12px; display:block; }
+.pos { color:#9ca3af; }
+.pts { font-weight:700; }
+.team-cell {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.team-logo {
+  width:28px;
+  height:28px;
+  border-radius:50%;
+  object-fit:cover;
+  background:#0f172a;
+}
+.division-panel {
+  margin-top:8px;
+}
+</style>
+"""
 
 
-# ------------------------------------------------------
-# 1. MATCHING THE NAME EXPECTED BY main.py
-# ------------------------------------------------------
-def get_gmail_creds(json_path="client_secret.json", token_path="gmail_token.json"):
+def _wrap_body_with_css(body_html: str) -> str:
     """
-    Loads Gmail OAuth credentials from token + client secret files.
-    This name MUST remain 'get_gmail_creds' because main.py imports it.
+    If body_html is just a fragment, wrap it in a full HTML shell
+    with our CSS. If the caller already passed a full <html> document,
+    leave it as-is.
     """
-    if not os.path.exists(json_path):
-        raise FileNotFoundError(f"Client secret file not found: {json_path}")
-    if not os.path.exists(token_path):
-        raise FileNotFoundError(f"Token file not found: {token_path}")
+    lower = body_html.strip().lower()
+    if lower.startswith("<!doctype") or lower.startswith("<html"):
+        # Assume caller already added CSS, don't touch it.
+        return body_html
 
-    creds = Credentials.from_authorized_user_file(token_path, ["https://www.googleapis.com/auth/gmail.send"])
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+{INLINE_EMAIL_CSS}
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
+
+
+def get_gmail_creds(json_path: str = "client_secret.json",
+                    token_path: str = "gmail_token.json") -> Credentials:
+    """
+    Load Gmail credentials from token_path if present, otherwise
+    run the manual OAuth flow (OOB) and save the token.
+
+    This function name is what main.py expects – do NOT rename it.
+    """
+    token_file = Path(token_path)
+
+    if token_file.exists():
+        try:
+            print("🔐 Using existing Gmail token…")
+            return Credentials.from_authorized_user_file(str(token_file), SCOPES)
+        except Exception:
+            print("⚠ Failed to load existing token, removing and re-authenticating.")
+            token_file.unlink(missing_ok=True)
+
+    print("🔐 Starting manual Gmail OAuth (OOB mode)…")
+
+    flow = InstalledAppFlow.from_client_secrets_file(json_path, SCOPES)
+
+    # Explicitly set redirect URI for OOB
+    flow.oauth2session.redirect_uri = OOB_REDIRECT_URI
+
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+    )
+
+    print("\n👉 Open this URL in a NEW browser tab:")
+    print(auth_url)
+
+    code = input("\n✏️ Paste the authorization code here:\n> ").strip()
+
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+
+    token_file.write_text(creds.to_json(), encoding="utf-8")
+    print(f"✅ Gmail authorization complete. Token saved as {token_file}.")
+
     return creds
 
 
-# ------------------------------------------------------
-# 2. EMAIL SENDER WITH FULL COLAB CSS
-# ------------------------------------------------------
-def send_report_email(creds, receiver_email, html_content, attachment_path=None):
+def send_report_email(
+    creds: Credentials,
+    receivers,
+    subject: str,
+    body_html: str,
+    attachment_path: str | None,
+) -> None:
     """
-    Sends an HTML email using Gmail API.
-    Embeds the full CSS so inline table looks EXACTLY like the Colab version.
+    Send a single email:
+      - HTML body (body_html) wrapped in our CSS shell
+      - Optional HTML attachment (attachment_path)
+      - To one or more receivers (list or comma-separated string)
     """
+    if isinstance(receivers, str):
+        receivers = [r.strip() for r in receivers.split(",") if r.strip()]
 
-    # ----- CSS identical to your Colab output -----
-    css_block = """
-    <style>
-    body {
-        background-color: #0f172a;
-        color: white;
-        font-family: Arial, sans-serif;
-        padding: 20px;
-    }
-    h2 {
-        color: #38bdf8;
-        margin-bottom: 12px;
-    }
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        background: #020617;
-        margin-bottom: 30px;
-    }
-    th {
-        background-color: #1e293b;
-        padding: 10px;
-        border-bottom: 2px solid #475569;
-        text-align: left;
-        font-size: 13px;
-        color: #e2e8f0;
-    }
-    td {
-        padding: 8px 10px;
-        border-bottom: 1px solid #1e293b;
-        font-size: 13px;
-    }
-    .team-cell {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .team-logo {
-        width: 24px;
-        height: 24px;
-        border-radius: 4px;
-    }
-    .gd-pos { color: #22c55e; font-weight: bold; }
-    .gd-neg { color: #ef4444; font-weight: bold; }
-    .pos, .pts { font-weight: bold; }
-    .next-main { font-weight: bold; display:block; }
-    .next-meta { color:#94a3b8; font-size:12px; }
-    .form-cell span {
-        margin-right: 4px;
-    }
-    </style>
-    """
+    service = build("gmail", "v1", credentials=creds)
 
-    html_body = f"{css_block}\n{html_content}"
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["To"] = ", ".join(receivers)
 
-    message = EmailMessage()
-    message["To"] = receiver_email
-    message["From"] = "me"
-    message["Subject"] = "YFL U11 — Weekly Form Guide"
+    # Wrap body with CSS + HTML boilerplate
+    html_with_css = _wrap_body_with_css(body_html)
 
-    message.add_alternative(html_body, subtype="html")
+    # Fallback plain text + HTML alternative
+    msg.set_content("This email requires an HTML-compatible client.")
+    msg.add_alternative(html_with_css, subtype="html")
 
-    # Attach file (HTML full table)
-    if attachment_path and os.path.exists(attachment_path):
-        mime_type, _ = mimetypes.guess_type(attachment_path)
-        mime_type = mime_type or "application/octet-stream"
-        maintype, subtype = mime_type.split("/")
-
-        with open(attachment_path, "rb") as f:
-            file_data = f.read()
-
-        message.add_attachment(
-            file_data,
-            maintype=maintype,
-            subtype=subtype,
-            filename=os.path.basename(attachment_path),
+    # Attachment (full HTML report)
+    if attachment_path:
+        p = Path(attachment_path)
+        data = p.read_bytes()
+        msg.add_attachment(
+            data,
+            maintype="text",
+            subtype="html",
+            filename=p.name,
         )
 
-    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    body = {"raw": raw}
 
-    try:
-        service = build("gmail", "v1", credentials=creds)
-        send_result = service.users().messages().send(
-            userId="me",
-            body={"raw": encoded_message}
-        ).execute()
-
-        print("📧 Email sent successfully.")
-        return send_result
-
-    except HttpError as error:
-        print(f"❌ Gmail API Error: {error}")
-        raise
+    sent = service.users().messages().send(userId="me", body=body).execute()
+    print("📨 Email sent. Message ID:", sent.get("id"))
