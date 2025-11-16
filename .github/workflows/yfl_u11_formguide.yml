@@ -58,6 +58,12 @@ jobs:
     # -----------------------------------------------------
     # 7) CREATE ENV VARS FOR LOGIN CREDENTIALS
     # -----------------------------------------------------
+    - name: Debug secrets (safe)
+      run: |
+        echo "EMAIL_RECEIVER is: ${EMAIL_RECEIVER:-<empty>}"
+      env:
+      EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+      
     - name: Export Environment Variables
       run: |
         echo "YFL_USERNAME=${{ secrets.YFL_USERNAME }}" >> $GITHUB_ENV
