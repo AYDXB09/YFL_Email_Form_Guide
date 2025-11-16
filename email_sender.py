@@ -1,109 +1,128 @@
 import os
 import base64
-from pathlib import Path
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
+import mimetypes
+from email.message import EmailMessage
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
+# ------------------------------------------------------
+# 1. MATCHING THE NAME EXPECTED BY main.py
+# ------------------------------------------------------
+def get_gmail_creds(json_path="client_secret.json", token_path="gmail_token.json"):
+    """
+    Loads Gmail OAuth credentials from token + client secret files.
+    This name MUST remain 'get_gmail_creds' because main.py imports it.
+    """
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Client secret file not found: {json_path}")
+    if not os.path.exists(token_path):
+        raise FileNotFoundError(f"Token file not found: {token_path}")
 
-# ---------------------------------------------------------
-# LOAD / REFRESH TOKEN (GitHub or local)
-# ---------------------------------------------------------
-def load_gmail_credentials():
-    token_path = Path("gmail_token.json")
-    secrets_path = Path("client_secret.json")
-
-    creds = None
-
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            # Refresh token
-            creds.refresh(Request())
-        else:
-            # Need full login (only when running manually)
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(secrets_path), SCOPES
-            )
-            auth_url, _ = flow.authorization_url(prompt="consent")
-            print("\n🔐 Open this URL in a browser:")
-            print(auth_url)
-            code = input("\nPaste authorization code here: ")
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-
-        # Save refreshed or new credentials
-        token_path.write_text(creds.to_json())
-
+    creds = Credentials.from_authorized_user_file(token_path, ["https://www.googleapis.com/auth/gmail.send"])
     return creds
 
 
-# ---------------------------------------------------------
-# BUILD INLINE EMAIL
-# ---------------------------------------------------------
-def build_inline_email_html(division3_html: str):
-    return f"""
-<html>
-  <body style="margin:0;padding:0;background:#0b1120;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-    <div style="max-width:900px;margin:0 auto;padding:20px;color:white;">
+# ------------------------------------------------------
+# 2. EMAIL SENDER WITH FULL COLAB CSS
+# ------------------------------------------------------
+def send_report_email(creds, receiver_email, html_content, attachment_path=None):
+    """
+    Sends an HTML email using Gmail API.
+    Embeds the full CSS so inline table looks EXACTLY like the Colab version.
+    """
 
-      <h1 style="font-size:26px;font-weight:700;margin-bottom:10px;">
-        YFL Dubai — U11 Division 3
-      </h1>
+    # ----- CSS identical to your Colab output -----
+    css_block = """
+    <style>
+    body {
+        background-color: #0f172a;
+        color: white;
+        font-family: Arial, sans-serif;
+        padding: 20px;
+    }
+    h2 {
+        color: #38bdf8;
+        margin-bottom: 12px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #020617;
+        margin-bottom: 30px;
+    }
+    th {
+        background-color: #1e293b;
+        padding: 10px;
+        border-bottom: 2px solid #475569;
+        text-align: left;
+        font-size: 13px;
+        color: #e2e8f0;
+    }
+    td {
+        padding: 8px 10px;
+        border-bottom: 1px solid #1e293b;
+        font-size: 13px;
+    }
+    .team-cell {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .team-logo {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+    }
+    .gd-pos { color: #22c55e; font-weight: bold; }
+    .gd-neg { color: #ef4444; font-weight: bold; }
+    .pos, .pts { font-weight: bold; }
+    .next-main { font-weight: bold; display:block; }
+    .next-meta { color:#94a3b8; font-size:12px; }
+    .form-cell span {
+        margin-right: 4px;
+    }
+    </style>
+    """
 
-      <p style="color:#cbd5e1;font-size:14px;margin-top:0;margin-bottom:15px;">
-        This email shows U11 Division 3 inline.<br>
-        The full enhanced guide (Divisions 1, 2 and 3) is attached as HTML.
-      </p>
+    html_body = f"{css_block}\n{html_content}"
 
-      <!-- COLAB QUALITY EXACT HTML -->
-      {division3_html}
-
-    </div>
-  </body>
-</html>
-"""
-
-
-# ---------------------------------------------------------
-# SEND EMAIL (INLINE + ATTACHMENT)
-# ---------------------------------------------------------
-def send_report_email(creds, receiver_email, inline_html, attachment_path):
-    service = build("gmail", "v1", credentials=creds)
-
-    message = MIMEMultipart("mixed")
+    message = EmailMessage()
     message["To"] = receiver_email
     message["From"] = "me"
-    message["Subject"] = "YFL Weekly Form Guide — U11 Division 3 (inline) + All Divisions attached"
+    message["Subject"] = "YFL U11 — Weekly Form Guide"
 
-    # Inline HTML section
-    html_part = MIMEMultipart("alternative")
-    html_part.attach(MIMEText(inline_html, "html"))
-    message.attach(html_part)
+    message.add_alternative(html_body, subtype="html")
 
-    # Attachment
-    if attachment_path and Path(attachment_path).exists():
+    # Attach file (HTML full table)
+    if attachment_path and os.path.exists(attachment_path):
+        mime_type, _ = mimetypes.guess_type(attachment_path)
+        mime_type = mime_type or "application/octet-stream"
+        maintype, subtype = mime_type.split("/")
+
         with open(attachment_path, "rb") as f:
-            part = MIMEApplication(f.read(), _subtype="html")
-            part.add_header(
-                "Content-Disposition",
-                "attachment",
-                filename=Path(attachment_path).name,
-            )
-            message.attach(part)
+            file_data = f.read()
 
-    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+        message.add_attachment(
+            file_data,
+            maintype=maintype,
+            subtype=subtype,
+            filename=os.path.basename(attachment_path),
+        )
 
-    service.users().messages().send(
-        userId="me", body={"raw": raw_message}
-    ).execute()
+    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-    print("📨 Email sent successfully!")
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        send_result = service.users().messages().send(
+            userId="me",
+            body={"raw": encoded_message}
+        ).execute()
+
+        print("📧 Email sent successfully.")
+        return send_result
+
+    except HttpError as error:
+        print(f"❌ Gmail API Error: {error}")
+        raise
