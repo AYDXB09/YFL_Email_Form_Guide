@@ -64,14 +64,6 @@ jobs:
         echo "YFL_PASSWORD=${{ secrets.YFL_PASSWORD }}" >> $GITHUB_ENV
 
     # -----------------------------------------------------
-    # PRINTING EMAIL Receiver
-    # -----------------------------------------------------
-    - name: Debug EMAIL_RECEIVER value
-      run: echo "EMAIL_RECEIVER=[$EMAIL_RECEIVER]"
-        env:
-          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-
-    # -----------------------------------------------------
     # 8) RUN THE PYTHON SCRAPER
     # -----------------------------------------------------
     - name: Run Scraper
