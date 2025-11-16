@@ -4,7 +4,7 @@ from pathlib import Path
 import textwrap
 
 from yfl_scraper import scrape_all_divisions
-from email_sender import load_gmail_credentials, send_report_email
+from email_sender import get_gmail_creds, send_report_email
  
 
 async def main():
