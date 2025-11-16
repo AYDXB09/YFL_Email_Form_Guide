@@ -1,168 +1,134 @@
 import base64
-import json
-import mimetypes
+import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+from email.mime.application import MIMEApplication
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# -------------------------------------------------------------------
-# 1) LOAD GMAIL CREDS FROM gmail_token.json (GitHub or Colab)
-# -------------------------------------------------------------------
-def get_gmail_creds(token_path="gmail_token.json"):
-    """
-    Loads Gmail OAuth token (already created in Colab earlier).
 
-    On GitHub Actions:
-    - token file is reconstructed from the repo secret GMAIL_TOKEN_JSON.
+# ------------------------------------------------------------
+# LOAD GMAIL CREDENTIALS (GitHub-friendly)
+# ------------------------------------------------------------
+def load_gmail_credentials():
+    """
+    Loads Gmail OAuth credentials from gmail_token.json and client_secret.json.
     """
 
-    with open(token_path, "r") as f:
-        token_data = json.load(f)
+    if not os.path.exists("gmail_token.json"):
+        raise RuntimeError("gmail_token.json not found in repo workspace")
 
-    creds = Credentials.from_authorized_user_info(
-        token_data,
-        scopes=["https://www.googleapis.com/auth/gmail.send"],
+    creds = Credentials.from_authorized_user_file(
+        "gmail_token.json",
+        scopes=["https://www.googleapis.com/auth/gmail.send"]
     )
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
 
     return creds
 
 
-# -------------------------------------------------------------------
-# 2) FULL INLINE CSS (Dark theme identical to Colab version)
-# -------------------------------------------------------------------
-INLINE_CSS = """
+# ------------------------------------------------------------
+# INLINE CSS WRAPPER (Used for inline Div 3)
+# ------------------------------------------------------------
+def wrap_inline_html(html_table):
+    """
+    Injects full dark-theme CSS identical to your Colab output.
+    """
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
 <style>
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #020617;
-  color: #f8fafc;
-  padding: 20px;
-}
-h2 { color: #f8fafc; margin-bottom: 12px; }
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: #0f172a;
-  color: #f8fafc;
-  font-size: 14px;
-}
-th {
-  background: #1e293b;
-  padding: 8px;
-  text-align: left;
-  border-bottom: 2px solid #334155;
-}
-td {
-  padding: 8px;
-  border-bottom: 1px solid #1e293b;
-}
-
-.team-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.team-logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  object-fit: cover;
-}
-
-.gd-pos { color: #22c55e; font-weight: 700; }
-.gd-neg { color: #ef4444; font-weight: 700; }
-
-.form-cell span {
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  width:24px;
-  height:24px;
-  border-radius:999px;
-  margin-right:4px;
-  font-size:11px;
-  font-weight:700;
-  background:#020617;
-}
-
-.form-W { border:2px solid #22c55e; color:#22c55e; }
-.form-D { border:2px solid #eab308; color:#eab308; }
-.form-L { border:2px solid #ef4444; color:#ef4444; }
-.form-N { border:2px solid #9ca3af; color:#9ca3af; }
-.form-V { 
-  border:2px solid #9ca3af; 
-  background: repeating-linear-gradient(45deg,#9ca3af 0,#9ca3af 4px,#e5e7eb 4px,#e5e7eb 8px);
-  color:#020617;
-}
-
-.next-main { font-weight: 600; display:block; }
-.next-meta { font-size: 12px; opacity: 0.7; }
+    body {{
+        background:#0b1120;
+        color:#fff;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        padding:20px;
+    }}
+    table {{
+        width:100%;
+        border-collapse: collapse;
+        background:#0f172a;
+        color:#fff;
+    }}
+    th {{
+        background:#1e293b;
+        padding:10px;
+        text-align:left;
+        font-size:14px;
+        font-weight:600;
+        border-bottom:1px solid #334155;
+    }}
+    td {{
+        padding:10px;
+        border-bottom:1px solid #1e293b;
+        font-size:13px;
+    }}
+    .team-cell {{
+        display:flex;
+        align-items:center;
+    }}
+    .team-logo {{
+        width:24px;
+        height:24px;
+        border-radius:4px;
+        margin-right:8px;
+    }}
+    .pos {{
+        font-weight:700;
+        color:#38bdf8;
+    }}
+    .gd-pos {{ color:#22c55e; font-weight:700; }}
+    .gd-neg {{ color:#ef4444; font-weight:700; }}
+    .pts {{ font-weight:700; }}
+    .next-main {{ display:block; font-weight:600; }}
+    .next-meta {{ display:block; font-size:12px; opacity:0.8; }}
 </style>
+</head>
+<body>
+{html_table}
+</body>
+</html>
 """
 
 
-# -------------------------------------------------------------------
-# 3) SEND EMAIL (inline HTML + attachment)
-# -------------------------------------------------------------------
-def send_report_email(
-    creds,
-    receiver_email,
-    html_inline_div3,
-    html_attachment_path="yfl_u11_form_guide.html"
-):
+# ------------------------------------------------------------
+# SEND EMAIL (inline HTML + attachment)
+# ------------------------------------------------------------
+def send_report_email(creds, receiver, inline_html, attachment_path):
+    """Sends 1 email with:
+    - inline HTML (Div 3)
+    - attachment of full HTML report
     """
-    Sends:
-      1) Inline HTML (Div 3 only)
-      2) Full HTML attachment (Div 1–3)
 
-    """
     service = build("gmail", "v1", credentials=creds)
 
-    msg = MIMEMultipart()
-    msg["To"] = receiver_email
-    msg["Subject"] = "YFL Weekly Form Guide — U11 Division 3 (Inline) + All Divisions Attached"
+    msg = MIMEMultipart("mixed")
+    msg["To"] = receiver
+    msg["From"] = "me"
+    msg["Subject"] = "YFL Weekly Form Guide — U11"
 
-    # ------------------------------------------------------------
-    # HTML BODY (inline)
-    # ------------------------------------------------------------
-    html_body = f"""
-    <html>
-    <head>{INLINE_CSS}</head>
-    <body>
-      <h2>YFL Dubai — Under 11 Form Guide</h2>
-      <p>This email shows <b>U11 Division 3</b> inline.<br>
-      For Divisions 1–3, open the attached HTML file <b>yfl_u11_form_guide.html</b>.</p>
-      {html_inline_div3}
-    </body>
-    </html>
-    """
+    # Add inline HTML
+    msg.attach(MIMEText(inline_html, "html"))
 
-    msg.attach(MIMEText(html_body, "html"))
+    # Add attachment
+    with open(attachment_path, "rb") as f:
+        attachment = MIMEApplication(f.read(), _subtype="html")
+        attachment.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=os.path.basename(attachment_path)
+        )
+        msg.attach(attachment)
 
-    # ------------------------------------------------------------
-    # ATTACHMENT (Full HTML)
-    # ------------------------------------------------------------
-    with open(html_attachment_path, "rb") as f:
-        attachment_data = f.read()
-
-    attachment = MIMEBase("text", "html")
-    attachment.set_payload(attachment_data)
-    encoders.encode_base64(attachment)
-    attachment.add_header(
-        "Content-Disposition",
-        f'attachment; filename="{html_attachment_path}"'
-    )
-
-    msg.attach(attachment)
-
-    # ------------------------------------------------------------
-    # SEND EMAIL
-    # ------------------------------------------------------------
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
-    return True
+    service.users().messages().send(
+        userId="me",
+        body={"raw": raw}
+    ).execute()
