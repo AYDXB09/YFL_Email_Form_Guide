@@ -1,134 +1,109 @@
-import base64
 import os
-from email.mime.multipart import MIMEMultipart
+import base64
+from pathlib import Path
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
-# ------------------------------------------------------------
-# LOAD GMAIL CREDENTIALS (GitHub-friendly)
-# ------------------------------------------------------------
+
+# ---------------------------------------------------------
+# LOAD / REFRESH TOKEN (GitHub or local)
+# ---------------------------------------------------------
 def load_gmail_credentials():
-    """
-    Loads Gmail OAuth credentials from gmail_token.json and client_secret.json.
-    """
+    token_path = Path("gmail_token.json")
+    secrets_path = Path("client_secret.json")
 
-    if not os.path.exists("gmail_token.json"):
-        raise RuntimeError("gmail_token.json not found in repo workspace")
+    creds = None
 
-    creds = Credentials.from_authorized_user_file(
-        "gmail_token.json",
-        scopes=["https://www.googleapis.com/auth/gmail.send"]
-    )
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
 
-    if not creds.valid:
-        if creds.expired and creds.refresh_token:
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            # Refresh token
             creds.refresh(Request())
+        else:
+            # Need full login (only when running manually)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(secrets_path), SCOPES
+            )
+            auth_url, _ = flow.authorization_url(prompt="consent")
+            print("\n🔐 Open this URL in a browser:")
+            print(auth_url)
+            code = input("\nPaste authorization code here: ")
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+
+        # Save refreshed or new credentials
+        token_path.write_text(creds.to_json())
 
     return creds
 
 
-# ------------------------------------------------------------
-# INLINE CSS WRAPPER (Used for inline Div 3)
-# ------------------------------------------------------------
-def wrap_inline_html(html_table):
-    """
-    Injects full dark-theme CSS identical to your Colab output.
-    """
-
+# ---------------------------------------------------------
+# BUILD INLINE EMAIL
+# ---------------------------------------------------------
+def build_inline_email_html(division3_html: str):
     return f"""
-<!DOCTYPE html>
 <html>
-<head>
-<meta charset="UTF-8" />
-<style>
-    body {{
-        background:#0b1120;
-        color:#fff;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        padding:20px;
-    }}
-    table {{
-        width:100%;
-        border-collapse: collapse;
-        background:#0f172a;
-        color:#fff;
-    }}
-    th {{
-        background:#1e293b;
-        padding:10px;
-        text-align:left;
-        font-size:14px;
-        font-weight:600;
-        border-bottom:1px solid #334155;
-    }}
-    td {{
-        padding:10px;
-        border-bottom:1px solid #1e293b;
-        font-size:13px;
-    }}
-    .team-cell {{
-        display:flex;
-        align-items:center;
-    }}
-    .team-logo {{
-        width:24px;
-        height:24px;
-        border-radius:4px;
-        margin-right:8px;
-    }}
-    .pos {{
-        font-weight:700;
-        color:#38bdf8;
-    }}
-    .gd-pos {{ color:#22c55e; font-weight:700; }}
-    .gd-neg {{ color:#ef4444; font-weight:700; }}
-    .pts {{ font-weight:700; }}
-    .next-main {{ display:block; font-weight:600; }}
-    .next-meta {{ display:block; font-size:12px; opacity:0.8; }}
-</style>
-</head>
-<body>
-{html_table}
-</body>
+  <body style="margin:0;padding:0;background:#0b1120;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    <div style="max-width:900px;margin:0 auto;padding:20px;color:white;">
+
+      <h1 style="font-size:26px;font-weight:700;margin-bottom:10px;">
+        YFL Dubai — U11 Division 3
+      </h1>
+
+      <p style="color:#cbd5e1;font-size:14px;margin-top:0;margin-bottom:15px;">
+        This email shows U11 Division 3 inline.<br>
+        The full enhanced guide (Divisions 1, 2 and 3) is attached as HTML.
+      </p>
+
+      <!-- COLAB QUALITY EXACT HTML -->
+      {division3_html}
+
+    </div>
+  </body>
 </html>
 """
 
 
-# ------------------------------------------------------------
-# SEND EMAIL (inline HTML + attachment)
-# ------------------------------------------------------------
-def send_report_email(creds, receiver, inline_html, attachment_path):
-    """Sends 1 email with:
-    - inline HTML (Div 3)
-    - attachment of full HTML report
-    """
-
+# ---------------------------------------------------------
+# SEND EMAIL (INLINE + ATTACHMENT)
+# ---------------------------------------------------------
+def send_report_email(creds, receiver_email, inline_html, attachment_path):
     service = build("gmail", "v1", credentials=creds)
 
-    msg = MIMEMultipart("mixed")
-    msg["To"] = receiver
-    msg["From"] = "me"
-    msg["Subject"] = "YFL Weekly Form Guide — U11"
+    message = MIMEMultipart("mixed")
+    message["To"] = receiver_email
+    message["From"] = "me"
+    message["Subject"] = "YFL Weekly Form Guide — U11 Division 3 (inline) + All Divisions attached"
 
-    # Add inline HTML
-    msg.attach(MIMEText(inline_html, "html"))
+    # Inline HTML section
+    html_part = MIMEMultipart("alternative")
+    html_part.attach(MIMEText(inline_html, "html"))
+    message.attach(html_part)
 
-    # Add attachment
-    with open(attachment_path, "rb") as f:
-        attachment = MIMEApplication(f.read(), _subtype="html")
-        attachment.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=os.path.basename(attachment_path)
-        )
-        msg.attach(attachment)
+    # Attachment
+    if attachment_path and Path(attachment_path).exists():
+        with open(attachment_path, "rb") as f:
+            part = MIMEApplication(f.read(), _subtype="html")
+            part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=Path(attachment_path).name,
+            )
+            message.attach(part)
 
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
 
     service.users().messages().send(
-        userId="me",
-        body={"raw": raw}
+        userId="me", body={"raw": raw_message}
     ).execute()
+
+    print("📨 Email sent successfully!")
