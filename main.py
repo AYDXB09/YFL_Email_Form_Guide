@@ -5,7 +5,7 @@ import textwrap
 
 from yfl_scraper import scrape_all_divisions
 from email_sender import load_gmail_credentials, send_report_email
-
+ 
 
 async def main():
     # --- YFL login credentials ---
