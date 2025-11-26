@@ -1,11 +1,3 @@
-# email_sender.py
-#
-# SMTP version:
-#   - send_report_email(): sends HTML email with optional attachment
-#   - wraps body HTML in CSS shell (same as before)
-#   - uses environment variables SMTP_USER / SMTP_PASS
-#   - no Google OAuth required
-
 import os
 from pathlib import Path
 import smtplib
@@ -14,9 +6,11 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
 # -------------------------------------------------------------------
-# CSS used for the inline email (matches the full HTML report look)
+# CSS for both inline and attachment tables
+# - Team name cell width reduced
+# - Header and row alignment fixed
 # -------------------------------------------------------------------
-INLINE_EMAIL_CSS = """
+TABLE_CSS = """
 <style>
 body {
   background:#020617;
@@ -25,31 +19,15 @@ body {
   padding:20px;
   margin:0;
 }
-h1 {
-  margin:0 0 8px 0;
-}
-h2 {
-  margin:16px 0 8px 0;
-}
-p {
-  margin:0 0 12px 0;
-  color:#9ca3af;
-}
-table {
-  width:100%;
-  border-collapse:collapse;
-  font-size:14px;
-}
-th,td {
-  padding:6px 8px;
-  border-bottom:1px solid #334155;
-}
-thead {
-  background:#0f172a;
-}
+h1 { margin:0 0 8px 0; }
+h2 { margin:16px 0 8px 0; }
+p { margin:0 0 12px 0; color:#9ca3af; }
+table { width:100%; border-collapse:collapse; font-size:14px; table-layout:auto; }
+th,td { padding:6px 8px; border-bottom:1px solid #334155; vertical-align:middle; }
+thead { background:#0f172a; }
 tbody tr:nth-child(even) { background:#0b1120; }
 tbody tr:nth-child(odd)  { background:#111827; }
-td.form-cell { max-width:360px; }
+td.team-name { max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .gd-pos { color:#22c55e; font-weight:700; }
 .gd-neg { color:#ef4444; font-weight:700; }
 .gd-zero { color:#9ca3af; }
@@ -62,30 +40,30 @@ td.form-cell { max-width:360px; }
   align-items:center;
   gap:8px;
 }
-.team-logo {
-  width:28px;
+.team-logo-inline {
+  width:20px;    /* only for inline email */
+  height:20px;
+  border-radius:50%;
+  object-fit:cover;
+  background:#0f172a;
+}
+.team-logo-attachment {
+  width:28px;    /* attachment keeps original size */
   height:28px;
   border-radius:50%;
   object-fit:cover;
   background:#0f172a;
 }
-.division-panel {
-  margin-top:8px;
-}
+.division-panel { margin-top:8px; }
 </style>
 """
 
-
 def _wrap_body_with_css(body_html: str) -> str:
-    """Wrap body HTML with CSS shell if not already a full HTML doc"""
-    lower = body_html.strip().lower()
-    if lower.startswith("<!doctype") or lower.startswith("<html"):
-        return body_html
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8" />
-{INLINE_EMAIL_CSS}
+{TABLE_CSS}
 </head>
 <body>
 {body_html}
@@ -93,21 +71,12 @@ def _wrap_body_with_css(body_html: str) -> str:
 </html>
 """
 
-
 def send_report_email(
     receivers,
     subject: str,
     body_html: str,
     attachment_path: str | None = None,
 ) -> None:
-    """
-    Send an HTML email with optional attachment via SMTP.
-
-    Environment variables:
-      SMTP_USER = Gmail address
-      SMTP_PASS = Gmail App Password
-    """
-
     smtp_user = os.getenv("SMTP_USER")
     smtp_pass = os.getenv("SMTP_PASS")
     if not smtp_user or not smtp_pass:
