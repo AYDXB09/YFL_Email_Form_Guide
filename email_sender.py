@@ -1,22 +1,17 @@
 # email_sender.py
 #
-# Gmail API helper:
-#   - get_gmail_creds(): loads or performs manual OAuth, saving gmail_token.json
-#   - send_report_email(): sends HTML email with attachment
-#
-# It also wraps the body HTML in a minimal <html><head><style>...</style><body>...</body>
-# shell so the inline Div 3 table uses the same dark CSS as the full report.
+# SMTP version:
+#   - send_report_email(): sends HTML email with optional attachment
+#   - wraps body HTML in CSS shell (same as before)
+#   - uses environment variables SMTP_USER / SMTP_PASS
+#   - no Google OAuth required
 
-import base64
+import os
 from pathlib import Path
-from email.message import EmailMessage
-
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
-OOB_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 
 # -------------------------------------------------------------------
 # CSS used for the inline email (matches the full HTML report look)
@@ -82,16 +77,10 @@ td.form-cell { max-width:360px; }
 
 
 def _wrap_body_with_css(body_html: str) -> str:
-    """
-    If body_html is just a fragment, wrap it in a full HTML shell
-    with our CSS. If the caller already passed a full <html> document,
-    leave it as-is.
-    """
+    """Wrap body HTML with CSS shell if not already a full HTML doc"""
     lower = body_html.strip().lower()
     if lower.startswith("<!doctype") or lower.startswith("<html"):
-        # Assume caller already added CSS, don't touch it.
         return body_html
-
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -105,93 +94,60 @@ def _wrap_body_with_css(body_html: str) -> str:
 """
 
 
-def get_gmail_creds(json_path: str = "client_secret.json",
-                    token_path: str = "gmail_token.json") -> Credentials:
-    """
-    Load Gmail credentials from token_path if present, otherwise
-    run the manual OAuth flow (OOB) and save the token.
-
-    This function name is what main.py expects – do NOT rename it.
-    """
-    token_file = Path(token_path)
-
-    if token_file.exists():
-        try:
-            print("🔐 Using existing Gmail token…")
-            return Credentials.from_authorized_user_file(str(token_file), SCOPES)
-        except Exception:
-            print("⚠ Failed to load existing token, removing and re-authenticating.")
-            token_file.unlink(missing_ok=True)
-
-    print("🔐 Starting manual Gmail OAuth (OOB mode)…")
-
-    flow = InstalledAppFlow.from_client_secrets_file(json_path, SCOPES)
-
-    # Explicitly set redirect URI for OOB
-    flow.oauth2session.redirect_uri = OOB_REDIRECT_URI
-
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
-
-    print("\n👉 Open this URL in a NEW browser tab:")
-    print(auth_url)
-
-    code = input("\n✏️ Paste the authorization code here:\n> ").strip()
-
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-
-    token_file.write_text(creds.to_json(), encoding="utf-8")
-    print(f"✅ Gmail authorization complete. Token saved as {token_file}.")
-
-    return creds
-
-
 def send_report_email(
-    creds: Credentials,
     receivers,
     subject: str,
     body_html: str,
-    attachment_path: str | None,
+    attachment_path: str | None = None,
 ) -> None:
     """
-    Send a single email:
-      - HTML body (body_html) wrapped in our CSS shell
-      - Optional HTML attachment (attachment_path)
-      - To one or more receivers (list or comma-separated string)
+    Send an HTML email with optional attachment via SMTP.
+
+    Environment variables:
+      SMTP_USER = Gmail address
+      SMTP_PASS = Gmail App Password
     """
+
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    if not smtp_user or not smtp_pass:
+        raise RuntimeError("SMTP_USER and SMTP_PASS must be set in environment variables")
+
     if isinstance(receivers, str):
         receivers = [r.strip() for r in receivers.split(",") if r.strip()]
 
-    service = build("gmail", "v1", credentials=creds)
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
+    # Create email
+    msg = MIMEMultipart()
+    msg["From"] = smtp_user
     msg["To"] = ", ".join(receivers)
+    msg["Subject"] = subject
 
-    # Wrap body with CSS + HTML boilerplate
+    # Wrap body with CSS
     html_with_css = _wrap_body_with_css(body_html)
 
     # Fallback plain text + HTML alternative
-    msg.set_content("This email requires an HTML-compatible client.")
-    msg.add_alternative(html_with_css, subtype="html")
+    msg.attach(MIMEText("This email requires an HTML-compatible client.", "plain"))
+    msg.attach(MIMEText(html_with_css, "html"))
 
-    # Attachment (full HTML report)
+    # Attach HTML file if provided
     if attachment_path:
         p = Path(attachment_path)
-        data = p.read_bytes()
-        msg.add_attachment(
-            data,
-            maintype="text",
-            subtype="html",
-            filename=p.name,
-        )
+        if p.exists():
+            with open(p, "rb") as f:
+                attachment = MIMEApplication(f.read(), _subtype="html")
+                attachment.add_header(
+                    "Content-Disposition",
+                    "attachment",
+                    filename=p.name,
+                )
+                msg.attach(attachment)
+        else:
+            print(f"⚠ Attachment not found: {attachment_path}")
 
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    body = {"raw": raw}
+    # Send email via Gmail SMTP
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, receivers, msg.as_string())
 
-    sent = service.users().messages().send(userId="me", body=body).execute()
-    print("📨 Email sent. Message ID:", sent.get("id"))
+    print("📧 Email sent successfully via SMTP!")
