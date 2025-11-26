@@ -4,8 +4,8 @@ from pathlib import Path
 import textwrap
 
 from yfl_scraper import scrape_all_divisions
-from email_sender import get_gmail_creds, send_report_email
- 
+from email_sender import send_report_email  # <-- now SMTP version
+
 
 async def main():
     # --- YFL login credentials ---
@@ -28,11 +28,7 @@ async def main():
         )
     receivers = [r.strip() for r in receiver_env.split(",") if r.strip()]
 
-    # --- Paths for Gmail OAuth files ---
-    client_secret_path = os.environ.get("GMAIL_CLIENT_SECRET_PATH", "client_secret.json")
-    token_path = os.environ.get("GMAIL_TOKEN_PATH", "gmail_token.json")
-
-    # 1) Scrape YFL + build HTML (full + inline Div 3)
+    # --- Paths for HTML output ---
     print("⚽ Starting YFL scrape + HTML build…")
     full_html, inline_div3_html, output_filename = await scrape_all_divisions(
         yfl_username,
@@ -46,7 +42,6 @@ async def main():
 
     # 2) Email report (inline Div 3 + full attachment)
     print("\n📧 Preparing to send email with HTML attached…")
-    creds = get_gmail_creds(json_path=client_secret_path, token_path=token_path)
 
     # Simple intro + inline Div 3
     body_html = textwrap.dedent(f"""
@@ -63,7 +58,6 @@ async def main():
     subject = os.environ.get("EMAIL_SUBJECT", "YFL Weekly Form Guide — U11")
 
     send_report_email(
-        creds=creds,
         receivers=receivers,
         subject=subject,
         body_html=body_html,
