@@ -1,10 +1,4 @@
-# email_sender.py
-#
-# SMTP version:
-#   - send_report_email(): sends HTML email with optional attachment
-#   - wraps body HTML in CSS shell (same as before)
-#   - uses environment variables SMTP_USER / SMTP_PASS
-#   - no Google OAuth required
+# email_sender.py (updated for clean inline table layout in email)
 
 import os
 from pathlib import Path
@@ -14,84 +8,60 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
 # -------------------------------------------------------------------
-# CSS used for the inline email (matches the full HTML report look)
+# Simplified inline email CSS (tables only, inline styles applied)
 # -------------------------------------------------------------------
-INLINE_EMAIL_CSS = """
-<style>
-body {
-  background:#020617;
-  color:#e5e7eb;
-  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  padding:20px;
-  margin:0;
+INLINE_TABLE_CSS = {
+    "table": "width:100%; border-collapse:collapse; font-family:Arial,sans-serif; font-size:14px;",
+    "th": "background:#0f172a; color:#e5e7eb; padding:6px 8px; text-align:left; border-bottom:1px solid #334155;",
+    "td_even": "background:#0b1120; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;",
+    "td_odd": "background:#111827; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;",
 }
-h1 {
-  margin:0 0 8px 0;
-}
-h2 {
-  margin:16px 0 8px 0;
-}
-p {
-  margin:0 0 12px 0;
-  color:#9ca3af;
-}
-table {
-  width:100%;
-  border-collapse:collapse;
-  font-size:14px;
-}
-th,td {
-  padding:6px 8px;
-  border-bottom:1px solid #334155;
-}
-thead {
-  background:#0f172a;
-}
-tbody tr:nth-child(even) { background:#0b1120; }
-tbody tr:nth-child(odd)  { background:#111827; }
-td.form-cell { max-width:360px; }
-.gd-pos { color:#22c55e; font-weight:700; }
-.gd-neg { color:#ef4444; font-weight:700; }
-.gd-zero { color:#9ca3af; }
-.next-main { font-weight:700; display:block; }
-.next-meta { color:#9ca3af; font-size:12px; display:block; }
-.pos { color:#9ca3af; }
-.pts { font-weight:700; }
-.team-cell {
-  display:flex;
-  align-items:center;
-  gap:8px;
-}
-.team-logo {
-  width:28px;
-  height:28px;
-  border-radius:50%;
-  object-fit:cover;
-  background:#0f172a;
-}
-.division-panel {
-  margin-top:8px;
-}
-</style>
-"""
 
 
-def _wrap_body_with_css(body_html: str) -> str:
-    """Wrap body HTML with CSS shell if not already a full HTML doc"""
-    lower = body_html.strip().lower()
-    if lower.startswith("<!doctype") or lower.startswith("<html"):
-        return body_html
+def _wrap_body_with_table_html(body_html: str) -> str:
+    """
+    Wrap a simplified HTML table snippet in a full HTML shell with inline styles.
+    """
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8" />
-{INLINE_EMAIL_CSS}
 </head>
-<body>
+<body style="background:#020617; color:#e5e7eb; padding:20px; margin:0; font-family:Arial,sans-serif;">
 {body_html}
 </body>
 </html>
 """
+
+
+def format_div3_table_for_email(div3_html: str) -> str:
+    """
+    Convert your inline Div 3 HTML into a simplified table with inline styles
+    for proper email rendering.
+    Assumes div3_html is a string with team rows.
+    """
+    # For simplicity, assume div3_html is already a table fragment like:
+    # <tr><td>Team A</td><td>W</td><td>Pts</td></tr>
+    # We'll wrap it with <table> and inline styles
+    table_html = f'<table style="{INLINE_TABLE_CSS["table"]}">\n'
+    table_html += (
+        f'<tr>'
+        f'<th style="{INLINE_TABLE_CSS["th"]}">Team</th>'
+        f'<th style="{INLINE_TABLE_CSS["th"]}">W</th>'
+        f'<th style="{INLINE_TABLE_CSS["th"]}">Pts</th>'
+        f'</tr>\n'
+    )
+
+    # Add rows, alternating background colors
+    rows = div3_html.split("\n")
+    for i, row in enumerate(rows):
+        style = INLINE_TABLE_CSS["td_even"] if i % 2 == 0 else INLINE_TABLE_CSS["td_odd"]
+        # Assuming row is <tr><td>Team A</td><td>1</td><td>10</td></tr>
+        row_clean = row.replace("<tr>", f'<tr style="{style}">')
+        table_html += row_clean + "\n"
+
+    table_html += "</table>\n"
+    return table_html
 
 
 def send_report_email(
@@ -102,14 +72,11 @@ def send_report_email(
 ) -> None:
     """
     Send an HTML email with optional attachment via SMTP.
-
-    Environment variables:
-      SMTP_USER = Gmail address
-      SMTP_PASS = Gmail App Password
+    Environment variables: SMTP_USER, SMTP_PASS
     """
 
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_pass = os.getenv("SMTP_PASS", "").replace("\xa0", "").strip()
     if not smtp_user or not smtp_pass:
         raise RuntimeError("SMTP_USER and SMTP_PASS must be set in environment variables")
 
@@ -122,14 +89,14 @@ def send_report_email(
     msg["To"] = ", ".join(receivers)
     msg["Subject"] = subject
 
-    # Wrap body with CSS
-    html_with_css = _wrap_body_with_css(body_html)
+    # Wrap Div3 table snippet for email body
+    email_body = _wrap_body_with_table_html(body_html)
 
     # Fallback plain text + HTML alternative
     msg.attach(MIMEText("This email requires an HTML-compatible client.", "plain"))
-    msg.attach(MIMEText(html_with_css, "html"))
+    msg.attach(MIMEText(email_body, "html"))
 
-    # Attach HTML file if provided
+    # Attach full HTML report if provided
     if attachment_path:
         p = Path(attachment_path)
         if p.exists():
@@ -144,7 +111,7 @@ def send_report_email(
         else:
             print(f"⚠ Attachment not found: {attachment_path}")
 
-    # Send email via Gmail SMTP
+    # Send email via SMTP
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
