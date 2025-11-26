@@ -1,5 +1,10 @@
 # email_sender.py
-# SMTP email sender with responsive inline Div3 table
+#
+# SMTP version:
+#   - send_report_email(): sends HTML email with optional attachment
+#   - wraps body HTML in CSS shell (same as before)
+#   - uses environment variables SMTP_USER / SMTP_PASS
+#   - no Google OAuth required
 
 import os
 from pathlib import Path
@@ -7,118 +12,124 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-from bs4 import BeautifulSoup
 
 # -------------------------------------------------------------------
-# 1) Convert existing inline Div3 HTML to responsive email table
+# CSS used for the inline email (matches the full HTML report look)
 # -------------------------------------------------------------------
-def inline_div3_to_responsive_table(inline_div3_html: str) -> str:
-    """
-    Convert inline_div3_html (from scraper) into
-    an email-friendly, responsive table with small logos.
-    """
-    soup = BeautifulSoup(inline_div3_html, "html.parser")
-    
-    table_html = """
-    <div style="max-width:600px; width:100%; overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; font-family:Arial,sans-serif; font-size:14px;">
-        <tr>
-          <th style="background:#0f172a; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;">Team</th>
-          <th style="background:#0f172a; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;">W</th>
-          <th style="background:#0f172a; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;">Pts</th>
-        </tr>
-    """
+INLINE_EMAIL_CSS = """
+<style>
+body {
+  background:#020617;
+  color:#e5e7eb;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  padding:20px;
+  margin:0;
+}
+h1 {
+  margin:0 0 8px 0;
+}
+h2 {
+  margin:16px 0 8px 0;
+}
+p {
+  margin:0 0 12px 0;
+  color:#9ca3af;
+}
+table {
+  width:100%;
+  border-collapse:collapse;
+  font-size:14px;
+}
+th,td {
+  padding:6px 8px;
+  border-bottom:1px solid #334155;
+}
+thead {
+  background:#0f172a;
+}
+tbody tr:nth-child(even) { background:#0b1120; }
+tbody tr:nth-child(odd)  { background:#111827; }
+td.form-cell { max-width:360px; }
+.gd-pos { color:#22c55e; font-weight:700; }
+.gd-neg { color:#ef4444; font-weight:700; }
+.gd-zero { color:#9ca3af; }
+.next-main { font-weight:700; display:block; }
+.next-meta { color:#9ca3af; font-size:12px; display:block; }
+.pos { color:#9ca3af; }
+.pts { font-weight:700; }
+.team-cell {
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.team-logo {
+  width:28px;
+  height:28px;
+  border-radius:50%;
+  object-fit:cover;
+  background:#0f172a;
+}
+.division-panel {
+  margin-top:8px;
+}
+</style>
+"""
 
-    rows = soup.select("tr")
-    for i, row in enumerate(rows):
-        bg_color = "#0b1120" if i % 2 == 0 else "#111827"
-        cells = row.find_all(["td", "th"])
-        if not cells:
-            continue
 
-        logo_tag = row.find("img")
-        logo_src = logo_tag.get("src") if logo_tag else ""
+def _wrap_body_with_css(body_html: str) -> str:
+    """Wrap body HTML with CSS shell if not already a full HTML doc"""
+    lower = body_html.strip().lower()
+    if lower.startswith("<!doctype") or lower.startswith("<html"):
+        return body_html
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+{INLINE_EMAIL_CSS}
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
 
-        team_name = cells[0].get_text(strip=True)
-        W = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-        Pts = cells[2].get_text(strip=True) if len(cells) > 2 else ""
 
-        table_html += f"""
-        <tr>
-          <td style="background:{bg_color}; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155;">
-            {'<img src="' + logo_src + '" width="28" height="28" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px;">' if logo_src else ''}
-            {team_name}
-          </td>
-          <td style="background:{bg_color}; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155; text-align:center;">
-            {W}
-          </td>
-          <td style="background:{bg_color}; color:#e5e7eb; padding:6px 8px; border-bottom:1px solid #334155; text-align:center;">
-            {Pts}
-          </td>
-        </tr>
-        """
-
-    table_html += "</table></div>"
-    return table_html
-
-# -------------------------------------------------------------------
-# 2) Wrap email body with responsive HTML
-# -------------------------------------------------------------------
-def wrap_body_with_email_html(body_html: str) -> str:
-    """
-    Wrap body in minimal HTML shell for email, include mobile responsiveness.
-    """
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <style>
-        @media only screen and (max-width: 480px) {{
-          table, th, td {{
-            font-size: 12px !important;
-          }}
-          img {{
-            width: 20px !important;
-            height: 20px !important;
-          }}
-        }}
-      </style>
-    </head>
-    <body style="background:#020617; color:#e5e7eb; font-family:Arial,sans-serif; padding:20px; margin:0;">
-      {body_html}
-    </body>
-    </html>
-    """
-
-# -------------------------------------------------------------------
-# 3) Send email via SMTP
-# -------------------------------------------------------------------
-def send_report_email(receivers, subject: str, body_html: str, attachment_path: str | None = None) -> None:
+def send_report_email(
+    receivers,
+    subject: str,
+    body_html: str,
+    attachment_path: str | None = None,
+) -> None:
     """
     Send an HTML email with optional attachment via SMTP.
-    Environment variables required: SMTP_USER, SMTP_PASS
+
+    Environment variables:
+      SMTP_USER = Gmail address
+      SMTP_PASS = Gmail App Password
     """
 
-    smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "").replace("\xa0", "").strip()
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
     if not smtp_user or not smtp_pass:
         raise RuntimeError("SMTP_USER and SMTP_PASS must be set in environment variables")
 
     if isinstance(receivers, str):
         receivers = [r.strip() for r in receivers.split(",") if r.strip()]
 
+    # Create email
     msg = MIMEMultipart()
     msg["From"] = smtp_user
     msg["To"] = ", ".join(receivers)
     msg["Subject"] = subject
 
+    # Wrap body with CSS
+    html_with_css = _wrap_body_with_css(body_html)
+
     # Fallback plain text + HTML alternative
     msg.attach(MIMEText("This email requires an HTML-compatible client.", "plain"))
-    msg.attach(MIMEText(body_html, "html"))
+    msg.attach(MIMEText(html_with_css, "html"))
 
-    # Attach full HTML report if provided
+    # Attach HTML file if provided
     if attachment_path:
         p = Path(attachment_path)
         if p.exists():
@@ -133,10 +144,10 @@ def send_report_email(receivers, subject: str, body_html: str, attachment_path: 
         else:
             print(f"⚠ Attachment not found: {attachment_path}")
 
-    # Send email via SMTP
+    # Send email via Gmail SMTP
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.sendmail(smtp_user, receivers, msg.as_string())
 
-    print("📧 Email sent successfully via SMTP")
+    print("📧 Email sent successfully via SMTP!")
