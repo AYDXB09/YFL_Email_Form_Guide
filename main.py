@@ -4,55 +4,40 @@ from pathlib import Path
 import textwrap
 
 from yfl_scraper import scrape_all_divisions
-from email_sender import send_report_email  # <-- now SMTP version
-
+from email_sender import send_report_email, _wrap_body_with_css
 
 async def main():
-    # --- YFL login credentials ---
     yfl_username = os.environ.get("YFL_USERNAME")
     yfl_password = os.environ.get("YFL_PASSWORD")
-
     if not yfl_username or not yfl_password:
-        raise RuntimeError(
-            "YFL_USERNAME and/or YFL_PASSWORD are not set. "
-            "Configure them as environment variables or GitHub Secrets."
-        )
+        raise RuntimeError("YFL_USERNAME and/or YFL_PASSWORD are not set")
 
-    # --- Email receiver(s) ---
-    # Comma-separated list, e.g. "me@example.com,coach@example.com"
     receiver_env = os.environ.get("EMAIL_RECEIVER")
     if not receiver_env:
-        raise RuntimeError(
-            "EMAIL_RECEIVER is not set. "
-            "Set it to one or more email addresses (comma-separated)."
-        )
+        raise RuntimeError("EMAIL_RECEIVER not set")
     receivers = [r.strip() for r in receiver_env.split(",") if r.strip()]
 
-    # --- Paths for HTML output ---
     print("⚽ Starting YFL scrape + HTML build…")
     full_html, inline_div3_html, output_filename = await scrape_all_divisions(
-        yfl_username,
-        yfl_password,
+        yfl_username, yfl_password
     )
 
-    # Save full HTML to disk (for attachment)
+    # --- Save full HTML report ---
     out_path = Path(output_filename)
     out_path.write_text(full_html, encoding="utf-8")
     print(f"🎉 Saved HTML report to {out_path.resolve()}")
 
-    # 2) Email report (inline Div 3 + full attachment)
-    print("\n📧 Preparing to send email with HTML attached…")
-
-    # Simple intro + inline Div 3
+    # --- Prepare inline HTML for email ---
+    # Wrap the inline Div 3 in <div> and use smaller logos
+    # Replace team-logo class with team-logo-inline for inline email
+    inline_html_email = inline_div3_html.replace("team-logo", "team-logo-inline")
     body_html = textwrap.dedent(f"""
-    <p>Hi,</p>
-    <p>Here is the latest <strong>YFL U11 Form Guide</strong>.</p>
-    <p>
-      The full form guide for <strong>U11 Divisions 1–3</strong> is attached as
-      <code>{output_filename}</code>.
-    </p>
-    <hr/>
-    {inline_div3_html}
+        <p>Hi,</p>
+        <p>Here is the latest <strong>YFL U11 Form Guide</strong>.</p>
+        <p>The full form guide for <strong>U11 Divisions 1–3</strong> is attached as
+        <code>{output_filename}</code>.</p>
+        <hr/>
+        {inline_html_email}
     """)
 
     subject = os.environ.get("EMAIL_SUBJECT", "YFL Weekly Form Guide — U11")
