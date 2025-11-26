@@ -35,25 +35,7 @@ jobs:
           python -m playwright install chromium
 
       # -----------------------------------------------------
-      # 4) Restore client_secret.json
-      # -----------------------------------------------------
-      - name: Restore client_secret.json
-        run: |
-          echo "${CLIENT_SECRET_JSON}" > client_secret.json
-        env:
-          CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
-
-      # -----------------------------------------------------
-      # 5) Restore gmail_token.json
-      # -----------------------------------------------------
-      - name: Restore gmail_token.json
-        run: |
-          echo "${GMAIL_TOKEN_JSON}" > gmail_token.json
-        env:
-          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
-
-      # -----------------------------------------------------
-      # 6) Debug EMAIL_RECEIVER (SAFE)
+      # 4) Debug EMAIL_RECEIVER (SAFE)
       # -----------------------------------------------------
       - name: Debug EMAIL_RECEIVER
         run: echo "EMAIL_RECEIVER=[$EMAIL_RECEIVER]"
@@ -61,7 +43,7 @@ jobs:
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
 
       # -----------------------------------------------------
-      # 7) Export Env Variables
+      # 5) Export Environment Variables
       # -----------------------------------------------------
       - name: Export Environment Variables
         run: |
@@ -69,9 +51,11 @@ jobs:
           echo "YFL_PASSWORD=${{ secrets.YFL_PASSWORD }}" >> $GITHUB_ENV
           echo "EMAIL_RECEIVER=${{ secrets.EMAIL_RECEIVER }}" >> $GITHUB_ENV
           echo "EMAIL_SUBJECT=YFL Weekly Form Guide — U11" >> $GITHUB_ENV
+          echo "SMTP_USER=${{ secrets.SMTP_USER }}" >> $GITHUB_ENV
+          echo "SMTP_PASS=${{ secrets.SMTP_PASS }}" >> $GITHUB_ENV
 
       # -----------------------------------------------------
-      # 8) Run Python Script
+      # 6) Run Python Script
       # -----------------------------------------------------
       - name: Run Scraper
         run: python main.py
