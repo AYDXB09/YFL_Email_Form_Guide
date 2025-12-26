@@ -170,12 +170,27 @@ async def _scrape_division(page, tournament_id: int, label: str):
     await page.goto(tournament_url)
     await page.wait_for_load_state("networkidle")
     await page.wait_for_timeout(1500)
+    # Wait for league rows to be injected (headers render first, rows async)
+    league_row_selectors = [
+        "tr[role='row']",
+        "table tbody tr",
+        "app-league-group-table tr",
+        "app-league-table tr",
+    ]
+    for sel in league_row_selectors:
+        try:
+            await page.wait_for_selector(sel, timeout=15000)
+            break
+        except Exception:
+            continue
 
     # ------------------ OFFICIAL TABLE ------------------
     print("\n📊 Parsing official League Table…")
     league_html = await page.content()
     league_soup = BeautifulSoup(league_html, "html.parser")
     rows = _extract_league_rows(league_soup)
+    if not rows:
+        raise RuntimeError(f"No league rows found for {label} after page load.")
 
     for tr in rows:
         cells = _extract_cells(tr)
@@ -246,8 +261,7 @@ async def _scrape_division(page, tournament_id: int, label: str):
 
     print(f"✅ Parsed official table for {len(official_stats)} teams.")
     if not official_stats:
-        print("❌ No official league data – cannot build table.")
-        return {"label": label, "rows_html": "", "official_stats": {}, "team_logos": {}}
+        raise RuntimeError(f"No official league data found for {label} — aborting.")
 
     # logos per team
     team_logos = {t: None for t in official_stats.keys()}
