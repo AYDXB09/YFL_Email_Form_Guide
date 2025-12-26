@@ -18,11 +18,18 @@ BASE = "https://leaguehub-yfl.sportstack.ai"
 LOGIN_URL = f"{BASE}/re/login"
 
 # Tournament IDs (change these for other age groups / divisions)
+# Only IDs and labels are needed; panel IDs are derived from labels.
 TOURNAMENTS = [
-    (90, "U11 Division 1", "panel-div1"),
-    (91, "U11 Division 2", "panel-div2"),
-    (92, "U11 Division 3", "panel-div3"),
+    (90, "U11 Division 1"),
+    (91, "U11 Division 2"),
+    (92, "U11 Division 3"),
 ]
+
+
+def _panel_id_from_label(label: str) -> str:
+    """Generate a safe HTML ID from a division label."""
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+    return slug or "panel"
 
 
 async def _scrape_division(page, tournament_id: int, label: str):
@@ -35,51 +42,287 @@ async def _scrape_division(page, tournament_id: int, label: str):
 
     print(f"\n==============================\n📂 Scraping {label} (tournament {tournament_id})\n==============================")
 
+    def _clean_team_name(raw: str) -> str:
+        return re.sub(r"\(D\d+\)", "", raw).strip()
+
+    def _extract_league_rows(soup: BeautifulSoup):
+        """Return the best-guess collection of rows for the league table.
+
+        The LeagueHub UI recently changed markup; this helper tries multiple
+        selectors (table-based and div/role-based) so we don't break when the
+        structure moves away from <table>.
+        """
+
+        selectors = [
+            "app-league-group-table tr",
+            "app-league-table tr",
+            "table tr",
+            "[role='row']",
+            ".table-row",
+        ]
+
+        for sel in selectors:
+            rows = soup.select(sel)
+            if rows:
+                return rows
+        return []
+
+    def _extract_cells(tr):
+        """Get cell-like elements for a row regardless of markup."""
+        tds = tr.find_all("td")
+        if len(tds) >= 9:
+            return tds
+
+        # New layout might use div/span rows instead of <td>.
+        divs = tr.find_all(["div", "span"], recursive=False)
+        if len(divs) >= 9:
+            return divs
+
+        # Fall back to any descendants to avoid hard failure.
+        return tr.find_all(["td", "div", "span"])
+
+    def _extract_team_names_from_fixture(soup: BeautifulSoup, known_teams):
+        """Parse home/away names even if the layout changed."""
+        def _unique(seq):
+            out = []
+            for item in seq:
+                if item not in out:
+                    out.append(item)
+            return out
+
+        candidates = []
+        name_selectors = [
+            "[data-testid='home-team-name']",
+            "[data-testid='away-team-name']",
+            "[data-testid='home-team']",
+            "[data-testid='away-team']",
+            ".team-name",
+            ".club-name",
+            ".team",
+            "p.font-semibold",
+            "span.font-semibold",
+            "p.text-sm",
+            "span.text-sm",
+        ]
+
+        for sel in name_selectors:
+            for el in soup.select(sel):
+                txt = el.get_text(" ", strip=True)
+                if not txt:
+                    continue
+                candidates.append(_clean_team_name(txt))
+
+        if len(candidates) < 2:
+            # Fallback: look for known team names in the card text
+            card_text = soup.get_text(" ", strip=True)
+            for team in known_teams:
+                if re.search(rf"\b{re.escape(team)}\b", card_text, re.I):
+                    candidates.append(team)
+
+        uniq = _unique(candidates)
+        if len(uniq) >= 2:
+            return uniq[0], uniq[1]
+        return None, None
+
+    async def _read_week_header():
+        """Return (week_no, header_text) if present."""
+        header_text = None
+        header_loc = page.locator("app-fixture-list").locator("text=/Week\\s+\\d+/i").first
+        if await header_loc.count():
+            header_text = (await header_loc.inner_text()).strip()
+        else:
+            header_loc = page.locator("text=/Week\\s+\\d+/i").first
+            if await header_loc.count():
+                header_text = (await header_loc.inner_text()).strip()
+
+        if not header_text:
+            return None, None
+
+        m = re.search(r"Week\s+(\d+)", header_text, re.I)
+        if not m:
+            return None, header_text
+        return int(m.group(1)), header_text
+
+    async def _go_to_previous_week():
+        """Click the previous-week control if present."""
+        selectors = [
+            "app-fixture-list button:has(app-icon[name='arrow-left'])",
+            "app-fixture-list button:has(app-icon[name='chevron-left'])",
+            "button:has(app-icon[name='arrow-left'])",
+            "button:has-text('Previous')",
+            "button:has-text('Prev')",
+        ]
+
+        for sel in selectors:
+            btn = page.locator(sel).first
+            try:
+                if await btn.count():
+                    await btn.click()
+                    await page.wait_for_timeout(1500)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _open_week_dropdown():
+        """Try to open the Week dropdown."""
+        triggers = [
+            "app-fixture-list button:has-text('Week')",
+            "button:has-text('Week')",
+            "[role='combobox']",
+            "div[role='button']:has-text('Week')",
+        ]
+        for sel in triggers:
+            btn = page.locator(sel).first
+            try:
+                if await btn.count():
+                    await btn.click()
+                    await page.wait_for_timeout(500)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _get_week_options():
+        """Collect week labels from the dropdown."""
+        if not await _open_week_dropdown():
+            return []
+
+        option_sets = [
+            page.locator("div[role='option']"),
+            page.locator("li[role='option']"),
+            page.locator("app-fixture-list [role='option']"),
+            page.locator(".mat-option"),
+        ]
+        options = []
+        for loc in option_sets:
+            try:
+                count = await loc.count()
+            except Exception:
+                continue
+            for i in range(count):
+                try:
+                    txt = (await loc.nth(i).inner_text()).strip()
+                except Exception:
+                    continue
+                if txt:
+                    options.append(txt)
+            if options:
+                break
+
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        # De-duplicate, preserve order
+        seen = set()
+        uniq = []
+        for opt in options:
+            if opt not in seen:
+                seen.add(opt)
+                uniq.append(opt)
+        return uniq
+
+    async def _select_week_option(label: str):
+        """Open the dropdown and select the given label."""
+        if not await _open_week_dropdown():
+            raise RuntimeError(f"Cannot open Week dropdown to select '{label}'")
+
+        option_selectors = [
+            f"div[role='option']:has-text('{label}')",
+            f"li[role='option']:has-text('{label}')",
+            f".mat-option:has-text('{label}')",
+            f"[role='option']:has-text('{label}')",
+        ]
+        for sel in option_selectors:
+            opt = page.locator(sel).first
+            try:
+                if await opt.count():
+                    await opt.click()
+                    await page.wait_for_timeout(1200)
+                    return
+            except Exception:
+                continue
+        raise RuntimeError(f"Week option '{label}' not found in dropdown")
+
     # ------------------ OPEN TOURNAMENT ------------------
     tournament_url = f"{BASE}/re/tournament/{tournament_id}"
     print(f"➡ Opening tournament page {tournament_url}...")
     await page.goto(tournament_url)
     await page.wait_for_load_state("networkidle")
     await page.wait_for_timeout(1500)
+    # Debug screenshot before waiting for rows (helps CI artifacts)
+    try:
+        await page.screenshot(path=f"debug_{tournament_id}_before_rows.png", full_page=True)
+    except Exception:
+        pass
+
+    # Wait for league rows to be injected (headers render first, rows async)
+    league_row_selectors = ["tr[role='row']", "table tbody tr"]
+    try:
+        await page.wait_for_selector(
+            ",".join(league_row_selectors),
+            timeout=15000,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Timeout waiting for league rows for {label} using selectors {league_row_selectors}"
+        ) from exc
 
     # ------------------ OFFICIAL TABLE ------------------
     print("\n📊 Parsing official League Table…")
     league_html = await page.content()
     league_soup = BeautifulSoup(league_html, "html.parser")
-
-    rows = league_soup.select("app-league-group-table tr")
+    rows = _extract_league_rows(league_soup)
     if not rows:
-        rows = league_soup.select("table tr")
+        raise RuntimeError(f"No league rows found for {label} after page load.")
 
     for tr in rows:
-        tds = tr.find_all("td")
-        if len(tds) < 9:
-            continue
-        try:
-            pos = int(tds[0].get_text(strip=True))
-        except ValueError:
-            continue  # header row
-
-        team_raw = tds[1].get_text(" ", strip=True)
-        team_name = re.sub(r"\(D\d+\)", "", team_raw).strip()
-
-        try:
-            played = int(tds[2].get_text(strip=True))
-            w = int(tds[3].get_text(strip=True))
-            d = int(tds[4].get_text(strip=True))
-            l = int(tds[5].get_text(strip=True))
-        except ValueError:
+        cells = _extract_cells(tr)
+        if len(cells) < 6:
             continue
 
-        gf_ga_text = tds[6].get_text(strip=True)
+        texts = [c.get_text(" ", strip=True) for c in cells]
+        try:
+            pos = int(texts[0])
+        except (ValueError, IndexError):
+            continue  # header row or malformed
+
+        team_raw = texts[1] if len(texts) > 1 else ""
+        team_name = _clean_team_name(team_raw)
+
+        try:
+            played = int(texts[2])
+            w = int(texts[3])
+            d = int(texts[4])
+            l = int(texts[5])
+        except (ValueError, IndexError):
+            continue
+
+        gf_ga_idx = 6
+        gd_idx = 7
+        pts_idx = 8
+
+        gf = ga = None
+        gf_ga_text = texts[gf_ga_idx] if len(texts) > gf_ga_idx else ""
         gf_ga_match = re.match(r"(\d+)\s*/\s*(\d+)", gf_ga_text)
-        if not gf_ga_match:
+        if gf_ga_match:
+            gf = int(gf_ga_match.group(1))
+            ga = int(gf_ga_match.group(2))
+        elif len(texts) >= 10:
+            try:
+                gf = int(texts[6])
+                ga = int(texts[7])
+                gd_idx = 8
+                pts_idx = 9
+            except ValueError:
+                continue
+        else:
             continue
-        gf = int(gf_ga_match.group(1))
-        ga = int(gf_ga_match.group(2))
 
-        gd_text = tds[7].get_text(strip=True)
-        pts_text = tds[8].get_text(strip=True)
+        gd_text = texts[gd_idx] if len(texts) > gd_idx else ""
+        pts_text = texts[pts_idx] if len(texts) > pts_idx else ""
         try:
             gd = int(gd_text)
         except ValueError:
@@ -104,8 +347,7 @@ async def _scrape_division(page, tournament_id: int, label: str):
 
     print(f"✅ Parsed official table for {len(official_stats)} teams.")
     if not official_stats:
-        print("❌ No official league data – cannot build table.")
-        return {"label": label, "rows_html": "", "official_stats": {}, "team_logos": {}}
+        raise RuntimeError(f"No official league data found for {label} — aborting.")
 
     # logos per team
     team_logos = {t: None for t in official_stats.keys()}
@@ -113,131 +355,229 @@ async def _scrape_division(page, tournament_id: int, label: str):
     # ------------------ FIXTURES (WEEK BY WEEK) ------------------
     print("\n🔍 Week-by-week scrape (fixtures)…\n")
 
-    for _ in range(30):  # safety limit
-        # week header
-        try:
-            header = await page.locator(
-                "app-fixture-list p.text-xs"
-            ).first.inner_text()
-            header = header.strip()
-        except Exception:
-            print("⚠ No Week header found inside app-fixture-list. Stopping.")
-            break
+    week_options = await _get_week_options()
+    if not week_options:
+        print("⚠ Could not read Week dropdown options; falling back to pagination buttons.")
+        week_iter = None
+    else:
+        # scrape latest first
+        week_iter = list(reversed(week_options))
 
-        m = re.search(r"Week\s+(\d+)", header)
-        if not m:
-            print("⚠ Could not parse week number from:", header)
-            break
-        week_no = int(m.group(1))
-        if week_no in seen_weeks:
-            print(f"⏹ Week {week_no} already scraped. Stop.")
-            break
-        seen_weeks.add(week_no)
-
-        parts = header.split("-", 1)
-        date_text = parts[1] if len(parts) > 1 else header
-        try:
-            dt = dateparser.parse(date_text, fuzzy=True).date()
-            dt_str = dt.strftime("%d %b %Y")
-        except Exception:
-            dt = None
-            dt_str = ""
-
-        print(f"📅 Week {week_no} — {dt_str}")
-
-        fixtures_loc = page.locator("app-fixture-list app-single-fixture")
-        count = await fixtures_loc.count()
-        for i in range(count):
-            fixture = fixtures_loc.nth(i)
-            html = await fixture.inner_html()
-            soup = BeautifulSoup(html, "html.parser")
-
-            # team names: any "(D1)/(D2)/(D3)" pattern
-            names = soup.find_all(string=re.compile(r"\(D\d+\)"))
-            if len(names) < 2:
+    if week_iter is not None:
+        for opt in week_iter:
+            try:
+                await _select_week_option(opt)
+            except Exception as exc:
+                print(f"⚠ Failed to select week '{opt}': {exc}")
                 continue
-            home = re.sub(r"\(D\d+\)", "", names[0]).strip()
-            away = re.sub(r"\(D\d+\)", "", names[1]).strip()
 
-            # logos from <img>
-            imgs = soup.find_all("img")
-            if len(imgs) >= 2:
-                home_logo_url = imgs[0].get("src", "").strip()
-                away_logo_url = imgs[-1].get("src", "").strip()
-                if home in team_logos and team_logos[home] is None and home_logo_url:
-                    team_logos[home] = home_logo_url
-                if away in team_logos and team_logos[away] is None and away_logo_url:
-                    team_logos[away] = away_logo_url
+            week_no, header = await _read_week_header()
+            if week_no is None:
+                print(f"⚠ No Week header after selecting '{opt}'. Skipping.")
+                continue
+            if week_no in seen_weeks:
+                print(f"⏹ Week {week_no} already scraped. Skip duplicate.")
+                continue
+            seen_weeks.add(week_no)
 
-            # detect "Voided"
-            is_voided = bool(soup.find(string=re.compile(r"\bVoided\b", re.I)))
+            parts = header.split("-", 1)
+            date_text = parts[1] if len(parts) > 1 else header
+            try:
+                dt = dateparser.parse(date_text, fuzzy=True).date()
+                dt_str = dt.strftime("%d %b %Y")
+            except Exception:
+                dt = None
+                dt_str = ""
 
-            # score: 3 <p> tags (x, "-", y)
-            score_div = soup.select_one(
-                "div.flex.flex-row.items-center.justify-center.gap-2"
-            )
-            score_home = score_away = None
-            if score_div:
-                p_tags = score_div.find_all("p")
-                if len(p_tags) >= 3:
-                    t0 = p_tags[0].get_text(strip=True)
-                    t1 = p_tags[1].get_text(strip=True)
-                    t2 = p_tags[2].get_text(strip=True)
-                    if t0.isdigit() and t2.isdigit() and t1 in ["-", "–"]:
-                        score_home = int(t0)
-                        score_away = int(t2)
+            print(f"📅 Week {week_no} — {dt_str} (selected '{opt}')")
 
-            if is_voided:
-                status = "voided"
-            elif score_home is not None and score_away is not None:
-                status = "played"
-            else:
-                status = "scheduled"
+            fixtures_loc = page.locator("app-fixture-list app-single-fixture")
+            count = await fixtures_loc.count()
+            for i in range(count):
+                fixture = fixtures_loc.nth(i)
+                html = await fixture.inner_html()
+                soup = BeautifulSoup(html, "html.parser")
 
-            fixture_rec = {
-                "week": week_no,
-                "week_date": dt,
-                "week_date_str": dt_str,
-                "home": home,
-                "away": away,
-                "status": status,
-                "score_home": score_home,
-                "score_away": score_away,
-            }
-            all_fixtures.append(fixture_rec)
+                # team names: try explicit selectors first, then fallback to regex
+                home, away = _extract_team_names_from_fixture(soup, official_stats.keys())
+                if not home or not away:
+                    names = soup.find_all(string=re.compile(r"\(D\d+\)"))
+                    if len(names) < 2:
+                        continue
+                    home = _clean_team_name(names[0])
+                    away = _clean_team_name(names[1])
 
-            # Valid played match → for stats cross-check
-            if status == "played":
-                sh, sa = score_home, score_away
-                rh = "W" if sh > sa else "L" if sh < sa else "D"
-                ra = "W" if sa > sh else "L" if sa < sh else "D"
-                all_results.append({
+                # logos from <img>
+                imgs = soup.find_all("img")
+                if len(imgs) >= 2:
+                    home_logo_url = imgs[0].get("src", "").strip()
+                    away_logo_url = imgs[-1].get("src", "").strip()
+                    if home in team_logos and team_logos[home] is None and home_logo_url:
+                        team_logos[home] = home_logo_url
+                    if away in team_logos and team_logos[away] is None and away_logo_url:
+                        team_logos[away] = away_logo_url
+
+                # detect "Voided"
+                is_voided = bool(soup.find(string=re.compile(r"\bVoided\b", re.I)))
+
+                # score: 3 <p> tags (x, "-", y)
+                score_div = soup.select_one(
+                    "div.flex.flex-row.items-center.justify-center.gap-2"
+                )
+                score_home = score_away = None
+                if score_div:
+                    p_tags = score_div.find_all("p")
+                    if len(p_tags) >= 3:
+                        t0 = p_tags[0].get_text(strip=True)
+                        t1 = p_tags[1].get_text(strip=True)
+                        t2 = p_tags[2].get_text(strip=True)
+                        if t0.isdigit() and t2.isdigit() and t1 in ["-", "–"]:
+                            score_home = int(t0)
+                            score_away = int(t2)
+
+                if is_voided:
+                    status = "voided"
+                elif score_home is not None and score_away is not None:
+                    status = "played"
+                else:
+                    status = "scheduled"
+
+                fixture_rec = {
                     "week": week_no,
                     "week_date": dt,
                     "week_date_str": dt_str,
                     "home": home,
                     "away": away,
-                    "score_home": sh,
-                    "score_away": sa,
-                    "result_home": rh,
-                    "result_away": ra,
-                })
+                    "status": status,
+                    "score_home": score_home,
+                    "score_away": score_away,
+                }
+                all_fixtures.append(fixture_rec)
 
-        # previous week button
-        prev_btn = page.locator(
-            "app-fixture-list button:has(app-icon[name='arrow-left'])"
-        ).first
-        try:
-            if await prev_btn.count():
-                await prev_btn.click()
-                await page.wait_for_timeout(1500)
-                continue
-            else:
+                # Valid played match → for stats cross-check
+                if status == "played":
+                    sh, sa = score_home, score_away
+                    rh = "W" if sh > sa else "L" if sh < sa else "D"
+                    ra = "W" if sa > sh else "L" if sa < sh else "D"
+                    all_results.append({
+                        "week": week_no,
+                        "week_date": dt,
+                        "week_date_str": dt_str,
+                        "home": home,
+                        "away": away,
+                        "score_home": sh,
+                        "score_away": sa,
+                        "result_home": rh,
+                        "result_away": ra,
+                    })
+    else:
+        for _ in range(30):  # safety limit
+            week_no, header = await _read_week_header()
+            if week_no is None:
+                print("⚠ No Week header found. Stopping.")
+                break
+
+            if week_no in seen_weeks:
+                print(f"⏹ Week {week_no} already scraped. Stop.")
+                break
+            seen_weeks.add(week_no)
+
+            parts = header.split("-", 1)
+            date_text = parts[1] if len(parts) > 1 else header
+            try:
+                dt = dateparser.parse(date_text, fuzzy=True).date()
+                dt_str = dt.strftime("%d %b %Y")
+            except Exception:
+                dt = None
+                dt_str = ""
+
+            print(f"📅 Week {week_no} — {dt_str}")
+
+            fixtures_loc = page.locator("app-fixture-list app-single-fixture")
+            count = await fixtures_loc.count()
+            for i in range(count):
+                fixture = fixtures_loc.nth(i)
+                html = await fixture.inner_html()
+                soup = BeautifulSoup(html, "html.parser")
+
+                # team names: try explicit selectors first, then fallback to regex
+                home, away = _extract_team_names_from_fixture(soup, official_stats.keys())
+                if not home or not away:
+                    names = soup.find_all(string=re.compile(r"\(D\d+\)"))
+                    if len(names) < 2:
+                        continue
+                    home = _clean_team_name(names[0])
+                    away = _clean_team_name(names[1])
+
+                # logos from <img>
+                imgs = soup.find_all("img")
+                if len(imgs) >= 2:
+                    home_logo_url = imgs[0].get("src", "").strip()
+                    away_logo_url = imgs[-1].get("src", "").strip()
+                    if home in team_logos and team_logos[home] is None and home_logo_url:
+                        team_logos[home] = home_logo_url
+                    if away in team_logos and team_logos[away] is None and away_logo_url:
+                        team_logos[away] = away_logo_url
+
+                # detect "Voided"
+                is_voided = bool(soup.find(string=re.compile(r"\bVoided\b", re.I)))
+
+                # score: 3 <p> tags (x, "-", y)
+                score_div = soup.select_one(
+                    "div.flex.flex-row.items-center.justify-center.gap-2"
+                )
+                score_home = score_away = None
+                if score_div:
+                    p_tags = score_div.find_all("p")
+                    if len(p_tags) >= 3:
+                        t0 = p_tags[0].get_text(strip=True)
+                        t1 = p_tags[1].get_text(strip=True)
+                        t2 = p_tags[2].get_text(strip=True)
+                        if t0.isdigit() and t2.isdigit() and t1 in ["-", "–"]:
+                            score_home = int(t0)
+                            score_away = int(t2)
+
+                if is_voided:
+                    status = "voided"
+                elif score_home is not None and score_away is not None:
+                    status = "played"
+                else:
+                    status = "scheduled"
+
+                fixture_rec = {
+                    "week": week_no,
+                    "week_date": dt,
+                    "week_date_str": dt_str,
+                    "home": home,
+                    "away": away,
+                    "status": status,
+                    "score_home": score_home,
+                    "score_away": score_away,
+                }
+                all_fixtures.append(fixture_rec)
+
+                # Valid played match → for stats cross-check
+                if status == "played":
+                    sh, sa = score_home, score_away
+                    rh = "W" if sh > sa else "L" if sh < sa else "D"
+                    ra = "W" if sa > sh else "L" if sa < sh else "D"
+                    all_results.append({
+                        "week": week_no,
+                        "week_date": dt,
+                        "week_date_str": dt_str,
+                        "home": home,
+                        "away": away,
+                        "score_home": sh,
+                        "score_away": sa,
+                        "result_home": rh,
+                        "result_away": ra,
+                    })
+
+            # previous week button
+            moved = await _go_to_previous_week()
+            if not moved:
                 print("⏹ No previous-week button found. Finished.")
                 break
-        except Exception:
-            print("⏹ Error clicking previous-week button; stopping.")
-            break
 
     # ------------------ BUILD FORM TIMELINE ------------------
     today = date.today()
@@ -547,7 +887,7 @@ async def scrape_all_divisions(username: str, password: str):
     divisions_data = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(headless=False)
         page = await browser.new_page()
 
         # ------------------ LOGIN ONCE ------------------
@@ -597,7 +937,8 @@ async def scrape_all_divisions(username: str, password: str):
         print("✅ Login successful.")
 
         # ------------------ SCRAPE EACH DIVISION ------------------
-        for tid, label, panel_id in TOURNAMENTS:
+        for tid, label in TOURNAMENTS:
+            panel_id = _panel_id_from_label(label)
             div_data = await _scrape_division(page, tid, label)
             div_data["panel_id"] = panel_id
             divisions_data.append(div_data)
