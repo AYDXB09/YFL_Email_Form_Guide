@@ -1,11 +1,6 @@
-
 # yfl_scraper.py — OPTION 1 (API-based, CI-safe)
-# Uses Sportstack JSON API instead of UI scraping for league tables.
-# Tested pattern: /api/v1/organizer/yfl/parent/competitions/4/leagues/{league_id}/overview
 
 import os
-import asyncio
-import json
 from datetime import date
 from typing import List, Tuple, Dict, Any
 
@@ -16,7 +11,6 @@ BASE_WEB = "https://leaguehub-yfl.sportstack.ai"
 LOGIN_URL = f"{BASE_WEB}/re/login"
 API_BASE = "https://api.sportstack.ai/api/v1"
 
-# YFL organizer / parent competition (from DevTools)
 ORGANIZER = "yfl"
 PARENT_COMPETITION_ID = 4
 
@@ -26,6 +20,8 @@ TOURNAMENTS: List[Tuple[int, str]] = [
     (92, "U11 Division 3"),
 ]
 
+
+# ---------------- AUTH ----------------
 async def login_and_get_cookies() -> Dict[str, str]:
     user = os.environ.get("YFL_USERNAME")
     pwd = os.environ.get("YFL_PASSWORD")
@@ -40,12 +36,13 @@ async def login_and_get_cookies() -> Dict[str, str]:
         await page.fill("input[name='password']", pwd)
         await page.click("button[type='submit']")
         await page.wait_for_load_state("networkidle")
-
         cookies = await page.context.cookies()
         await browser.close()
 
     return {c["name"]: c["value"] for c in cookies}
 
+
+# ---------------- API ----------------
 async def fetch_league_overview(
     session: aiohttp.ClientSession, league_id: int
 ) -> Dict[str, Any]:
@@ -58,6 +55,8 @@ async def fetch_league_overview(
             raise RuntimeError(f"API {url} failed with {resp.status}")
         return await resp.json()
 
+
+# ---------------- HTML ----------------
 def build_table_html(label: str, overview: Dict[str, Any]) -> str:
     standings = overview.get("standings", [])
     if not standings:
@@ -65,7 +64,8 @@ def build_table_html(label: str, overview: Dict[str, Any]) -> str:
 
     rows = []
     for row in standings:
-        rows.append(f"""<tr>
+        rows.append(f"""
+<tr>
 <td>{row.get('position','')}</td>
 <td>{row.get('teamName','')}</td>
 <td>{row.get('played','')}</td>
@@ -75,9 +75,11 @@ def build_table_html(label: str, overview: Dict[str, Any]) -> str:
 <td>{row.get('goalsFor','')}/{row.get('goalsAgainst','')}</td>
 <td>{row.get('goalDifference','')}</td>
 <td>{row.get('points','')}</td>
-</tr>""")
+</tr>
+""")
 
-    return f"""<section>
+    return f"""
+<section>
 <h2>{label}</h2>
 <table border="1" cellspacing="0" cellpadding="4">
 <thead>
@@ -90,15 +92,17 @@ def build_table_html(label: str, overview: Dict[str, Any]) -> str:
 {''.join(rows)}
 </tbody>
 </table>
-</section>"""
+</section>
+"""
 
-async def scrape_all_divisions():
+
+# ---------------- ENTRY POINT (MATCHES main.py) ----------------
+async def scrape_all_divisions(*args, **kwargs):
     today = date.today().isoformat()
     cookies = await login_and_get_cookies()
 
     jar = aiohttp.CookieJar()
-    for k, v in cookies.items():
-        jar.update_cookies({k: v})
+    jar.update_cookies(cookies)
 
     sections = []
     async with aiohttp.ClientSession(cookie_jar=jar) as session:
@@ -106,7 +110,8 @@ async def scrape_all_divisions():
             overview = await fetch_league_overview(session, league_id)
             sections.append(build_table_html(label, overview))
 
-    full_html = f"""<!doctype html>
+    full_html = f"""
+<!doctype html>
 <html>
 <head><meta charset="utf-8"><title>YFL U11 Form Guide</title></head>
 <body>
@@ -114,6 +119,7 @@ async def scrape_all_divisions():
 <p>Generated: {today}</p>
 {''.join(sections)}
 </body>
-</html>"""
+</html>
+"""
 
     return full_html, None, f"yfl_u11_form_guide_{today}.html"
