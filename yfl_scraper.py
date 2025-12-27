@@ -1,4 +1,4 @@
-# yfl_scraper.py — OPTION 1 (API-only, CI-safe)
+# yfl_scraper.py — API-only, CI-safe, 401 FIXED
 
 import aiohttp
 from datetime import date
@@ -15,6 +15,15 @@ TOURNAMENTS: List[Tuple[int, str]] = [
     (92, "U11 Division 3"),
 ]
 
+# Required headers (prevents 401)
+API_HEADERS = {
+    "x-organizer": "yfl",
+    "accept": "application/json",
+    "user-agent": "Mozilla/5.0",
+    "origin": "https://leaguehub-yfl.sportstack.ai",
+    "referer": "https://leaguehub-yfl.sportstack.ai/",
+}
+
 
 async def fetch_league_overview(
     session: aiohttp.ClientSession, league_id: int
@@ -23,9 +32,12 @@ async def fetch_league_overview(
         f"{API_BASE}/organizer/{ORGANIZER}/parent/competitions/"
         f"{PARENT_COMPETITION_ID}/leagues/{league_id}/overview"
     )
-    async with session.get(url) as resp:
+
+    async with session.get(url, headers=API_HEADERS) as resp:
         if resp.status != 200:
-            raise RuntimeError(f"API call failed ({resp.status}) for league {league_id}")
+            raise RuntimeError(
+                f"API call failed ({resp.status}) for league {league_id}"
+            )
         return await resp.json()
 
 
@@ -77,7 +89,7 @@ def build_table_html(label: str, overview: Dict[str, Any]) -> str:
 """
 
 
-# ---- ENTRY POINT (MATCHES main.py EXPECTATIONS) ----
+# ---- ENTRY POINT EXPECTED BY main.py ----
 async def scrape_all_divisions(*args, **kwargs):
     today = date.today().isoformat()
     sections = []
