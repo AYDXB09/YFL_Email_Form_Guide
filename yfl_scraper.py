@@ -31,10 +31,16 @@ async def login_and_get_cookies() -> Dict[str, str]:
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.goto(LOGIN_URL, wait_until="networkidle")
-        await page.fill("input[name='email']", user)
-        await page.fill("input[name='password']", pwd)
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+
+        await page.wait_for_selector("input[type='email']", timeout=20000)
+        await page.fill("input[type='email']", user)
+
+        await page.wait_for_selector("input[type='password']", timeout=20000)
+        await page.fill("input[type='password']", pwd)
+
         await page.click("button[type='submit']")
+        await page.wait_for_load_state("networkidle")
         await page.wait_for_load_state("networkidle")
         cookies = await page.context.cookies()
         await browser.close()
