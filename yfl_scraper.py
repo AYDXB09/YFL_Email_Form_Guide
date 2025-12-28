@@ -149,7 +149,7 @@ def build_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
 # Public entrypoint
 # -------------------------
 
-async def scrape_all_divisions() -> Tuple[str, None, str]:
+async def scrape_all_divisions(*_args) -> Tuple[str, None, str]:
     _require_env()
 
     today = date.today().isoformat()
