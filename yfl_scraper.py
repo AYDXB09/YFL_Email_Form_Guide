@@ -157,29 +157,32 @@ def build_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
 async def scrape_all_divisions(*_args) -> Tuple[str, str, str]:
     today = date.today().isoformat()
 
-    sections: List[str] = []
-    inline_div3_html = ""  # MUST be a string
+    sections = []
+    inline_div3_html = ""
 
     async with aiohttp.ClientSession() as session:
         for league_id, label in TOURNAMENTS:
             fixtures = await fetch_all_fixtures(session, league_id)
+
             section_html = build_division_section(label, fixtures)
             sections.append(section_html)
 
+            # 🔑 INLINE EMAIL CONTENT (Division 3 ONLY)
             if league_id == 92:
-                inline_div3_html = f"""
-<html>
-<body>
-{section_html}
-</body>
-</html>
-"""
+                inline_div3_html = section_html  # <-- NO html/body wrapper
 
+    # 🔑 FULL ATTACHMENT HTML (Div 1–3)
     full_html = f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>YFL U11 Weekly Form Guide</title>
+<style>
+body {{ font-family: Arial, sans-serif; background:#0b1220; color:#fff; }}
+table {{ border-collapse: collapse; width:100%; }}
+th, td {{ padding:6px; border:1px solid #333; }}
+h1, h2, h3 {{ color:#fff; }}
+</style>
 </head>
 <body>
 <h1>YFL U11 Weekly Form Guide</h1>
