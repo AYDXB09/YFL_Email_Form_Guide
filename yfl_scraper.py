@@ -1,15 +1,12 @@
 # yfl_scraper.py
-# FINAL – RESTORED BEHAVIOUR
-# Inline U11 Division 3 + Full Attachment (Div 1–3)
+# FINAL – STABLE, NON-BREAKING
+# Inline Division 3 + Full HTML attachment
+# Handles divisions with NO fixtures safely
 
 import os
 import aiohttp
 from datetime import date
 from typing import Tuple, List, Dict
-
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
 
 API_BASE = "https://api.sportstack.ai/api/v1"
 ORGANIZER = "yfl"
@@ -22,7 +19,7 @@ TOURNAMENTS = [
 ]
 
 # --------------------------------------------------
-# HELPERS
+# ENV / AUTH
 # --------------------------------------------------
 
 def _require_env():
@@ -36,22 +33,18 @@ def _auth_headers():
     }
 
 # --------------------------------------------------
-# API CALLS
+# API
 # --------------------------------------------------
 
 async def fetch_all_fixtures(
     session: aiohttp.ClientSession,
     league_id: int,
 ) -> List[Dict]:
-    """
-    Pulls ALL fixtures for ALL weeks by brute-force scanning.
-    This matches browser behaviour and avoids week_id guessing.
-    """
 
-    fixtures: List[Dict] = []
+    fixtures: Dict[int, Dict] = {}
 
-    # empirically seen week_ids range ~52–80
-    for week_id in range(50, 85):
+    # observed safe range from browser
+    for week_id in range(50, 90):
         url = (
             f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
             f"?league_id={league_id}&competition_id={COMPETITION_ID}&week_id={week_id}"
@@ -62,23 +55,26 @@ async def fetch_all_fixtures(
                 continue
 
             data = await resp.json()
-            if isinstance(data, list) and data:
-                fixtures.extend(data)
+            if not isinstance(data, list):
+                continue
 
-    # de-duplicate by fixture id
-    uniq = {}
-    for f in fixtures:
-        uniq[f["id"]] = f
+            for f in data:
+                fixtures[f["id"]] = f
 
-    return list(uniq.values())
+    return list(fixtures.values())
 
 # --------------------------------------------------
-# HTML BUILDERS
+# HTML
 # --------------------------------------------------
 
 def build_division_table(label: str, fixtures: List[Dict]) -> str:
-    rows = []
+    if not fixtures:
+        return f"""
+        <h2>YFL Dubai — {label}</h2>
+        <p><em>No fixtures available.</em></p>
+        """
 
+    rows = []
     for f in sorted(fixtures, key=lambda x: (x["date"], x["start_at"])):
         rows.append(
             f"""
@@ -115,17 +111,10 @@ def build_division_table(label: str, fixtures: List[Dict]) -> str:
     """
 
 # --------------------------------------------------
-# MAIN ENTRY (CALLED BY main.py)
+# MAIN ENTRY (EXPECTED BY main.py)
 # --------------------------------------------------
 
 async def scrape_all_divisions(*_args) -> Tuple[str, str, str]:
-    """
-    RETURNS:
-    1) full_html        → attachment
-    2) inline_div3_html → email body
-    3) filename
-    """
-
     _require_env()
     today = date.today().isoformat()
 
@@ -135,10 +124,6 @@ async def scrape_all_divisions(*_args) -> Tuple[str, str, str]:
     async with aiohttp.ClientSession(headers=_auth_headers()) as session:
         for league_id, label in TOURNAMENTS:
             fixtures = await fetch_all_fixtures(session, league_id)
-
-            if not fixtures:
-                raise RuntimeError(f"No fixtures fetched for {label}")
-
             table_html = build_division_table(label, fixtures)
             sections.append(table_html)
 
