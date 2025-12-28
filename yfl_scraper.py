@@ -1,48 +1,49 @@
 # yfl_scraper.py
-# Final restored version – API-based, auto-week discovery, legacy-compatible
+# Restored version – API-based, multi-week form aggregation
+# Produces:
+# 1) inline HTML for Division 3
+# 2) full HTML attachment for Divisions 1–3
 
 import os
 import aiohttp
+import asyncio
 from datetime import date
 from collections import defaultdict
-from typing import List, Tuple, Dict, Any
-
-
-# ---------------- CONFIG ----------------
+from typing import Dict, List, Tuple
 
 API_BASE = "https://api.sportstack.ai/api/v1"
 ORGANIZER = "yfl"
 COMPETITION_ID = 4
 
-TOURNAMENTS: List[Tuple[int, str]] = [
+# league_id, label
+TOURNAMENTS = [
     (90, "U11 Division 1"),
     (91, "U11 Division 2"),
     (92, "U11 Division 3"),
 ]
 
-FORM_DEPTH = 8  # same visual depth as old UI
 
-
-# ---------------- AUTH ----------------
-
+# ------------------------------------------------------------
+# Auth
+# ------------------------------------------------------------
 def _auth_headers() -> Dict[str, str]:
-    token = os.environ.get("SPORTSTACK_API_TOKEN")
+    token = os.getenv("SPORTSTACK_API_TOKEN")
     if not token:
         raise RuntimeError("Missing SPORTSTACK_API_TOKEN")
-
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "Origin": "https://leaguehub-yfl.sportstack.ai",
-        "Referer": "https://leaguehub-yfl.sportstack.ai/",
     }
 
 
-# ---------------- API ----------------
-
+# ------------------------------------------------------------
+# API helpers
+# ------------------------------------------------------------
 async def fetch_fixtures_for_week(
-    session: aiohttp.ClientSession, league_id: int, week_id: int
-) -> List[Dict[str, Any]]:
+    session: aiohttp.ClientSession,
+    league_id: int,
+    week_id: int,
+) -> List[dict]:
     url = (
         f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
         f"?league_id={league_id}&competition_id={COMPETITION_ID}&week_id={week_id}"
@@ -50,169 +51,141 @@ async def fetch_fixtures_for_week(
     async with session.get(url) as r:
         if r.status != 200:
             return []
-        data = await r.json()
-        return data.get("data", data)
+        payload = await r.json()
+        return payload.get("data", [])
 
 
 async def discover_week_ids(
-    session: aiohttp.ClientSession, league_id: int
+    session: aiohttp.ClientSession,
+    league_id: int,
 ) -> List[int]:
-    # brute-force discovery exactly like the UI
-    discovered = set()
-    for wid in range(40, 90):
+    """
+    Discover valid week_ids by probing known pattern.
+    Sportstack weeks are not sequential; they increment by 2.
+    """
+    discovered = []
+    for wid in range(50, 80):  # safe range seen in DevTools
         fixtures = await fetch_fixtures_for_week(session, league_id, wid)
         if fixtures:
-            discovered.add(wid)
+            discovered.append(wid)
     return sorted(discovered)
 
 
-async def fetch_all_fixtures(
-    session: aiohttp.ClientSession, league_id: int
-) -> List[Dict[str, Any]]:
-    week_ids = await discover_week_ids(session, league_id)
-    all_fixtures = []
-
-    for wid in week_ids:
-        fixtures = await fetch_fixtures_for_week(session, league_id, wid)
-        all_fixtures.extend(fixtures)
-
-    return all_fixtures
-
-
-# ---------------- FORM LOGIC ----------------
-
-def result_for_team(f: Dict[str, Any], team: str) -> str:
-    if f["home_team_name"] == team:
-        if f["home_team_score"] > f["away_team_score"]:
-            return "W"
-        if f["home_team_score"] < f["away_team_score"]:
-            return "L"
-        return "D"
-
-    if f["away_team_name"] == team:
-        if f["away_team_score"] > f["home_team_score"]:
-            return "W"
-        if f["away_team_score"] < f["home_team_score"]:
-            return "L"
-        return "D"
-
-    return ""
+# ------------------------------------------------------------
+# Form logic
+# ------------------------------------------------------------
+def result_for_team(fixture: dict, team_name: str) -> str:
+    if fixture["home_team_name"] == team_name:
+        return (
+            "W" if fixture["home_team_score"] > fixture["away_team_score"]
+            else "D" if fixture["home_team_score"] == fixture["away_team_score"]
+            else "L"
+        )
+    else:
+        return (
+            "W" if fixture["away_team_score"] > fixture["home_team_score"]
+            else "D" if fixture["away_team_score"] == fixture["home_team_score"]
+            else "L"
+        )
 
 
-def build_team_form(fixtures: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-    per_team = defaultdict(list)
+def build_form_table(fixtures: List[dict]) -> Dict[str, List[str]]:
+    form = defaultdict(list)
 
-    fixtures = sorted(
-        fixtures,
-        key=lambda f: (f["date"], f["start_at"]),
+    # sort chronologically
+    fixtures = sorted(fixtures, key=lambda x: (x["date"], x["start_at"]))
+
+    for fx in fixtures:
+        home = fx["home_team_name"]
+        away = fx["away_team_name"]
+
+        form[home].append(result_for_team(fx, home))
+        form[away].append(result_for_team(fx, away))
+
+    return form
+
+
+# ------------------------------------------------------------
+# HTML rendering
+# ------------------------------------------------------------
+def render_form_row(results: List[str]) -> str:
+    return "".join(
+        f"<span class='f {r}'>{r}</span>" for r in results
     )
 
-    for f in fixtures:
-        if not f.get("has_finished"):
-            continue
 
-        home = f["home_team_name"]
-        away = f["away_team_name"]
-
-        per_team[home].append(result_for_team(f, home))
-        per_team[away].append(result_for_team(f, away))
-
-    return {
-        team: results[-FORM_DEPTH:]
-        for team, results in per_team.items()
-    }
-
-
-# ---------------- HTML ----------------
-
-def build_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
-    if not fixtures:
-        return f"<h2>{label}</h2><p><em>No fixtures available.</em></p>"
-
-    form = build_team_form(fixtures)
-
-    rows = []
-    for team, results in sorted(form.items()):
-        bubbles = "".join(
-            f"<span class='f {r}'>{r}</span>" for r in results
+def render_division_section(title: str, form: Dict[str, List[str]]) -> str:
+    rows = ""
+    for club in sorted(form.keys()):
+        rows += (
+            "<tr>"
+            f"<td>{club}</td>"
+            f"<td>{render_form_row(form[club])}</td>"
+            "</tr>"
         )
-        rows.append(
-            f"<tr><td>{team}</td><td>{bubbles}</td></tr>"
-        )
+
+    if not rows:
+        rows = "<tr><td colspan='2'>No fixtures available.</td></tr>"
 
     return f"""
-    <section>
-      <h2>{label}</h2>
-      <table>
-        <tr><th>Club</th><th>Form</th></tr>
-        {''.join(rows)}
-      </table>
-    </section>
-    """
+<section>
+  <h2>{title}</h2>
+  <table>
+    <tr><th>Club</th><th>Form</th></tr>
+    {rows}
+  </table>
+</section>
+"""
 
 
-def build_inline_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
-    # email-safe minimal table (Division 3 only)
-    if not fixtures:
-        return f"<h2>{label}</h2><p>No fixtures available.</p>"
-
-    form = build_team_form(fixtures)
-
-    rows = []
-    for team, results in sorted(form.items()):
-        rows.append(
-            f"<tr><td>{team}</td><td>{''.join(results)}</td></tr>"
-        )
-
-    return f"""
-    <h2>{label}</h2>
-    <table border="1" cellpadding="4" cellspacing="0">
-      <tr><th>Club</th><th>Form</th></tr>
-      {''.join(rows)}
-    </table>
-    """
-
-
-# ---------------- MAIN ENTRY ----------------
-
-async def scrape_all_divisions(*_args):
-    headers = _auth_headers()
+# ------------------------------------------------------------
+# Main entry (called by main.py)
+# ------------------------------------------------------------
+async def scrape_all_divisions(*_args) -> Tuple[str, str, str]:
     today = date.today().isoformat()
+    headers = _auth_headers()
 
     full_sections = []
-    inline_div3_html = None
+    inline_div3_html = ""
 
     async with aiohttp.ClientSession(headers=headers) as session:
         for league_id, label in TOURNAMENTS:
-            fixtures = await fetch_all_fixtures(session, league_id)
+            week_ids = await discover_week_ids(session, league_id)
 
-            section = build_division_section(label, fixtures)
-            full_sections.append(section)
+            all_fixtures = []
+            for wid in week_ids:
+                all_fixtures.extend(
+                    await fetch_fixtures_for_week(session, league_id, wid)
+                )
 
-            if label == "U11 Division 3":
-                inline_div3_html = build_inline_division_section(label, fixtures)
+            form = build_form_table(all_fixtures)
+            section_html = render_division_section(label, form)
+            full_sections.append(section_html)
 
-    full_html = f"""
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>YFL Weekly Form Guide — U11</title>
-      <style>
-        body {{ font-family: Arial; background:#0b1220; color:#fff }}
-        table {{ width:100%; border-collapse:collapse }}
-        td,th {{ padding:6px }}
-        .f.W {{ color:#3fb950 }}
-        .f.D {{ color:#d29922 }}
-        .f.L {{ color:#f85149 }}
-      </style>
-    </head>
-    <body>
-      <h1>YFL Weekly Form Guide — U11</h1>
-      <p>Generated: {today}</p>
-      {''.join(full_sections)}
-    </body>
-    </html>
-    """
+            if league_id == 92:
+                inline_div3_html = section_html
 
-    return full_html, inline_div3_html, f"yfl_u11_form_guide_{today}.html"
+    full_html = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>YFL Weekly Form Guide — U11</title>
+<style>
+body {{ font-family: Arial; background:#0b1220; color:#fff }}
+table {{ width:100%; border-collapse:collapse; margin-bottom:24px }}
+th, td {{ padding:6px; border-bottom:1px solid #222 }}
+.f.W {{ color:#3fb950; margin-right:4px }}
+.f.D {{ color:#d29922; margin-right:4px }}
+.f.L {{ color:#f85149; margin-right:4px }}
+</style>
+</head>
+<body>
+<h1>YFL Weekly Form Guide — U11</h1>
+<p>Generated: {today}</p>
+{''.join(full_sections)}
+</body>
+</html>
+"""
+
+    filename = f"yfl_u11_form_guide_{today}.html"
+    return full_html, inline_div3_html, filename
