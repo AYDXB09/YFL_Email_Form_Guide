@@ -31,7 +31,9 @@ async def main():
     print(f"🎉 Saved HTML report to {out_path.resolve()}")
 
     # --- Prepare inline HTML for email ---
-    # Use BeautifulSoup to flatten team cells and reduce logo size for email
+# Use BeautifulSoup to flatten team cells and reduce logo size for email
+
+if inline_div3_html:
     soup = BeautifulSoup(inline_div3_html, "html.parser")
 
     # Reduce logo size only for inline email
@@ -40,6 +42,9 @@ async def main():
         img["width"] = "20"
         img["height"] = "20"
 
+    inline_html = str(soup)
+else:
+    inline_html = ""
     # Reduce width of team name cells and prevent large gaps
     for td in soup.find_all("td", class_="team-name"):
         td["style"] = "max-width:180px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"
