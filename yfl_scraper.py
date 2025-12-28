@@ -288,20 +288,21 @@ async def _scrape_division(session, tournament_id: int, label: str):
                     "date": dstr,
                 })
 
-    # ------------------ NEXT FIXTURE ------------------
+       # ------------------ NEXT FIXTURE ------------------
     next_fix = {t: None for t in teams}
     df_fix_all = pd.DataFrame(all_fixtures)
+    
     df_fix_all["match_date"] = df_fix_all["week_date"]
     df_fix_all["match_date_str"] = df_fix_all["week_date"].apply(
         lambda d: d.strftime("%d %b %Y") if d else ""
     )
-
+    
     future = df_fix_all[
         (df_fix_all["status"] == "scheduled")
         & df_fix_all["match_date"].notnull()
-        & (df_fix_all["match_date"].dt.date >= date.today())
+        & (df_fix_all["match_date"] >= date.today())
     ]
-
+    
     for team in teams:
         sub = future[(future["home"] == team) | (future["away"] == team)]
         if sub.empty:
@@ -313,7 +314,7 @@ async def _scrape_division(session, tournament_id: int, label: str):
             "week": int(row["week"]),
             "date": row["match_date_str"],
         }
-
+        
     # ------------------ CROSS-CHECK (optional) ------------------
     if all_results:
         df_res = pd.DataFrame(all_results)
