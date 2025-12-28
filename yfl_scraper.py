@@ -34,7 +34,10 @@ async def _scrape_division(session, tournament_id: int, label: str):
     IMPORTANT: Keeps ZIP logic/visuals downstream unchanged.
     Standings + form are computed from fixtures only (Option A).
     """
-
+    from datetime import date
+    import pandas as pd
+    today = pd.to_datetime(date.today())
+    
     def _clean_team(name: str) -> str:
         # Original scraper removed "(D1)/(D2)/(D3)" suffixes
         return re.sub(r"\(D\d+\)", "", name or "").strip()
