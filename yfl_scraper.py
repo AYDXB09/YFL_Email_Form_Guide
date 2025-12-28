@@ -26,8 +26,6 @@ TOURNAMENTS = [
     (92, "U11 Division 3", "panel-div3"),
 ]
 
-
-
 async def _scrape_division(session, tournament_id: int, label: str):
     """API-backed: load fixtures for a division and generate the same HTML rows.
 
@@ -301,7 +299,7 @@ async def _scrape_division(session, tournament_id: int, label: str):
     future = df_fix_all[
         (df_fix_all["status"] == "scheduled")
         & df_fix_all["match_date"].notnull()
-        & (df_fix_all["match_date"] >= today)
+        & (df_fix_all["match_date"].dt.date >= date.today())
     ]
 
     for team in teams:
