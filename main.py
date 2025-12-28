@@ -3,7 +3,6 @@ import asyncio
 from pathlib import Path
 import textwrap
 from bs4 import BeautifulSoup
-
 from yfl_scraper import scrape_all_divisions
 from email_sender import send_report_email
 
