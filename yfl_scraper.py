@@ -324,7 +324,7 @@ async def _scrape_division(session, tournament_id: int, label: str):
                 for t in teams}
         for _, r in df_res.iterrows():
             md = r["match_date"]
-           if not md or md > date.today():
+   if not md or md > date.today():
                 continue
             h = r["home"]
             a = r["away"]
