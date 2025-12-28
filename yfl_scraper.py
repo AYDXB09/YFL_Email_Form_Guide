@@ -1,12 +1,12 @@
-# yfl_scraper.py — FINAL, FIXED, API-ONLY
+# yfl_scraper.py — FINAL, FIXED FOR main.py
 #
-# - No Playwright
+# - API only
 # - No week_id logic
-# - Groups fixtures by `week_name`
-# - Safe when fixtures are missing
-# - Compatible with existing main.py
+# - Groups fixtures by week_name
+# - Never returns None
+# - Compatible with existing main.py (BeautifulSoup usage)
 #
-# Required GitHub repo secret:
+# Required secret:
 #   SPORTSTACK_API_TOKEN
 
 import os
@@ -49,10 +49,6 @@ def _safe(x: Any) -> str:
 
 
 def _week_sort_key(week_name: str) -> int:
-    """
-    Extract numeric value from:
-    'Week 1', 'Week 9 (Sunday)', etc.
-    """
     m = re.search(r"Week\s+(\d+)", week_name)
     return int(m.group(1)) if m else 9999
 
@@ -65,13 +61,9 @@ async def fetch_all_fixtures(
     session: aiohttp.ClientSession,
     league_id: int,
 ) -> List[Dict[str, Any]]:
-    """
-    Sportstack does not provide a clean 'all weeks' endpoint.
-    We iterate over known valid week_id ranges and aggregate.
-    """
     fixtures: List[Dict[str, Any]] = []
 
-    # Observed valid range (stable in UI + CSV)
+    # Observed valid internal IDs
     for week_id in range(40, 80):
         url = (
             f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
@@ -92,7 +84,7 @@ async def fetch_all_fixtures(
 
 
 # -------------------------------------------------
-# HTML
+# HTML BUILDERS
 # -------------------------------------------------
 
 def build_week_table(week_name: str, matches: List[Dict[str, Any]]) -> str:
@@ -162,16 +154,28 @@ def build_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
 # ENTRY POINT (main.py compatible)
 # -------------------------------------------------
 
-async def scrape_all_divisions(*_args) -> Tuple[str, None, str]:
+async def scrape_all_divisions(*_args) -> Tuple[str, str, str]:
     today = date.today().isoformat()
+
     sections: List[str] = []
+    inline_div3_html = ""  # MUST be a string
 
     async with aiohttp.ClientSession() as session:
         for league_id, label in TOURNAMENTS:
             fixtures = await fetch_all_fixtures(session, league_id)
-            sections.append(build_division_section(label, fixtures))
+            section_html = build_division_section(label, fixtures)
+            sections.append(section_html)
 
-    html = f"""<!doctype html>
+            if league_id == 92:
+                inline_div3_html = f"""
+<html>
+<body>
+{section_html}
+</body>
+</html>
+"""
+
+    full_html = f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -185,4 +189,4 @@ async def scrape_all_divisions(*_args) -> Tuple[str, None, str]:
 </html>
 """
 
-    return html, None, f"yfl_u11_form_guide_{today}.html"
+    return full_html, inline_div3_html, f"yfl_u11_form_guide_{today}.html"
