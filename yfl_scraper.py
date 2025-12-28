@@ -1,207 +1,183 @@
-# yfl_scraper.py — FINAL, STABLE, API-ONLY
-#
-# - No UI scraping
-# - Auto-resolves current week_id
-# - Uses Sportstack API exactly like the web UI
-# - CI-safe (GitHub Actions)
-#
-# REQUIRED ENV VAR:
-#   SPORTSTACK_API_TOKEN   (GitHub repository secret)
-#
-# RETURNS:
-#   (full_html, inline_div3_html, output_filename)
+# yfl_scraper.py — FINAL (fixtures-based, week_name driven)
+# CI-safe, no UI scraping, no week_id logic
 
 import os
+import re
+import asyncio
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from collections import defaultdict
+from typing import Dict, List, Any, Tuple
 
 import aiohttp
 
-# ---------------- CONFIG ----------------
-
 API_BASE = "https://api.sportstack.ai/api/v1"
-WEB_ORIGIN = "https://leaguehub-yfl.sportstack.ai"
-
 ORGANIZER = "yfl"
-COMPETITION_ID = 4
+PARENT_COMPETITION_ID = 4
 
-LEAGUES: List[Tuple[int, str]] = [
+TOURNAMENTS = [
     (90, "U11 Division 1"),
     (91, "U11 Division 2"),
     (92, "U11 Division 3"),
 ]
 
-TOKEN = os.getenv("SPORTSTACK_API_TOKEN")
-if not TOKEN:
-    raise RuntimeError("Missing SPORTSTACK_API_TOKEN (set as GitHub repo secret).")
+REQUIRED_ENV = ["SPORTSTACK_API_TOKEN"]
 
-HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Accept": "application/json",
-    "User-Agent": "Mozilla/5.0",
-    "Origin": WEB_ORIGIN,
-    "Referer": f"{WEB_ORIGIN}/",
-}
 
-# ---------------- HELPERS ----------------
+# -------------------------
+# Helpers
+# -------------------------
 
-def _safe(x: Any) -> str:
-    return "" if x is None else str(x)
+def _require_env():
+    for k in REQUIRED_ENV:
+        if not os.getenv(k):
+            raise RuntimeError(f"Missing {k} (set as GitHub repo secret)")
 
-async def _get_json(session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
-    async with session.get(url, headers=HEADERS) as resp:
-        if resp.status != 200:
-            body = await resp.text()
-            raise RuntimeError(f"API {resp.status} for {url}: {body[:300]}")
-        return await resp.json()
 
-# ---------------- WEEK RESOLUTION ----------------
+def _auth_headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {os.environ['SPORTSTACK_API_TOKEN']}",
+        "Accept": "application/json",
+    }
 
-async def resolve_current_week_id(session: aiohttp.ClientSession, league_id: int) -> int:
+
+def _week_sort_key(week_name: str) -> int:
     """
-    Calls fixtures endpoint WITHOUT week_id and extracts current week_id,
-    exactly how the UI does it.
+    Extract numeric week index from strings like:
+    'Week 1', 'Week 9 (Sunday)'
     """
-    url = (
-        f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
-        f"?league_id={league_id}&competition_id={COMPETITION_ID}"
-    )
-    payload = await _get_json(session, url)
+    m = re.search(r"Week\s+(\d+)", week_name)
+    return int(m.group(1)) if m else 9999
 
-    # Preferred: explicit currentWeekId
-    if isinstance(payload.get("currentWeekId"), int):
-        return payload["currentWeekId"]
 
-    # Fallback: weeks list with isCurrent flag
-    weeks = payload.get("weeks")
-    if isinstance(weeks, list):
-        for w in weeks:
-            if w.get("isCurrent") is True and isinstance(w.get("id"), int):
-                return w["id"]
+# -------------------------
+# API calls
+# -------------------------
 
-    raise RuntimeError("Unable to auto-resolve current week_id")
-
-# ---------------- STANDINGS ----------------
-
-async def fetch_standings(session: aiohttp.ClientSession, league_id: int) -> List[Dict[str, Any]]:
-    url = (
-        f"{API_BASE}/organizer/{ORGANIZER}/parent/competitions/"
-        f"{COMPETITION_ID}/leagues/{league_id}/overview"
-    )
-    payload = await _get_json(session, url)
-
-    if isinstance(payload.get("standings"), list):
-        return payload["standings"]
-
-    data = payload.get("data")
-    if isinstance(data, dict) and isinstance(data.get("standings"), list):
-        return data["standings"]
-
-    raise RuntimeError(f"No standings returned for league {league_id}")
-
-# ---------------- FIXTURES ----------------
-
-async def fetch_fixtures(
-    session: aiohttp.ClientSession, league_id: int, week_id: int
+async def fetch_all_fixtures(
+    session: aiohttp.ClientSession,
+    league_id: int,
 ) -> List[Dict[str, Any]]:
-    url = (
-        f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
-        f"?league_id={league_id}&competition_id={COMPETITION_ID}&week_id={week_id}"
-    )
-    payload = await _get_json(session, url)
+    """
+    Sportstack does NOT expose a clean 'all weeks' endpoint.
+    We iterate over observed week_id ranges until responses dry up.
+    """
+    fixtures: List[Dict[str, Any]] = []
 
-    if isinstance(payload.get("fixtures"), list):
-        return payload["fixtures"]
+    # Empirically observed valid IDs (stable across UI + CSV)
+    candidate_week_ids = range(40, 80)
 
-    if isinstance(payload.get("data"), list):
-        return payload["data"]
-
-    return []
-
-# ---------------- HTML BUILDERS ----------------
-
-def build_standings_html(standings: List[Dict[str, Any]]) -> str:
-    rows = []
-    for r in standings:
-        rows.append(
-            "<tr>"
-            f"<td>{_safe(r.get('position'))}</td>"
-            f"<td>{_safe(r.get('teamName') or r.get('team') or r.get('name'))}</td>"
-            f"<td>{_safe(r.get('played'))}</td>"
-            f"<td>{_safe(r.get('won'))}</td>"
-            f"<td>{_safe(r.get('drawn'))}</td>"
-            f"<td>{_safe(r.get('lost'))}</td>"
-            f"<td>{_safe(r.get('goalsFor'))}/{_safe(r.get('goalsAgainst'))}</td>"
-            f"<td>{_safe(r.get('goalDifference'))}</td>"
-            f"<td>{_safe(r.get('points'))}</td>"
-            "</tr>"
+    for week_id in candidate_week_ids:
+        url = (
+            f"{API_BASE}/organizer/{ORGANIZER}/parent/fixtures"
+            f"?league_id={league_id}"
+            f"&competition_id={PARENT_COMPETITION_ID}"
+            f"&week_id={week_id}"
         )
 
-    return (
-        "<table class='standings'>"
-        "<thead><tr>"
-        "<th>#</th><th>Club</th><th>P</th><th>W</th><th>D</th><th>L</th>"
-        "<th>GF/GA</th><th>GD</th><th>PTS</th>"
-        "</tr></thead>"
-        "<tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
-    )
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                continue
 
-def build_fixtures_html(week_id: int, fixtures: List[Dict[str, Any]]) -> str:
-    if not fixtures:
-        return f"<h3>Fixtures (Week {week_id})</h3><p>No fixtures</p>"
+            data = await resp.json()
+            if isinstance(data, list) and data:
+                fixtures.extend(data)
 
-    items = []
-    for fx in fixtures:
-        home = fx.get("homeTeamName")
-        away = fx.get("awayTeamName")
-        hs = fx.get("homeScore")
-        as_ = fx.get("awayScore")
-        score = f"{hs}-{as_}" if hs is not None else ""
-        items.append(f"<li>{home} vs {away} {score}</li>")
+    return fixtures
 
-    return f"<h3>Fixtures (Week {week_id})</h3><ul>{''.join(items)}</ul>"
 
-def wrap_division(label: str, standings: str, fixtures: str) -> str:
-    return f"<section><h2>{label}</h2>{standings}{fixtures}</section>"
+# -------------------------
+# HTML builders
+# -------------------------
 
-def build_page(body: str, generated: str, week_id: int) -> str:
-    return f"""<!doctype html>
+def build_week_table(week_name: str, matches: List[Dict[str, Any]]) -> str:
+    rows = []
+    for m in matches:
+        rows.append(
+            f"""
+<tr>
+<td>{m['home_team_name']}</td>
+<td>{m['home_team_score']}</td>
+<td>{m['away_team_score']}</td>
+<td>{m['away_team_name']}</td>
+<td>{m['date']}</td>
+<td>{m['start_at']}</td>
+<td>{m['location_name']}</td>
+<td>{m['pitch_name']}</td>
+</tr>
+"""
+        )
+
+    return f"""
+<h3>{week_name}</h3>
+<table border="1" cellpadding="6" cellspacing="0">
+<thead>
+<tr>
+<th>Home</th>
+<th>H</th>
+<th>A</th>
+<th>Away</th>
+<th>Date</th>
+<th>Time</th>
+<th>Location</th>
+<th>Pitch</th>
+</tr>
+</thead>
+<tbody>
+{''.join(rows)}
+</tbody>
+</table>
+"""
+
+
+def build_division_section(label: str, fixtures: List[Dict[str, Any]]) -> str:
+    weeks: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    for f in fixtures:
+        weeks[f["week_name"]].append(f)
+
+    ordered_weeks = sorted(weeks.keys(), key=_week_sort_key)
+
+    return f"""
+<section>
+<h2>{label}</h2>
+{''.join(build_week_table(w, weeks[w]) for w in ordered_weeks)}
+</section>
+"""
+
+
+# -------------------------
+# Public entrypoint
+# -------------------------
+
+async def scrape_all_divisions() -> Tuple[str, None, str]:
+    _require_env()
+
+    today = date.today().isoformat()
+    headers = _auth_headers()
+
+    sections = []
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for league_id, label in TOURNAMENTS:
+            fixtures = await fetch_all_fixtures(session, league_id)
+
+            if not fixtures:
+                raise RuntimeError(f"No fixtures found for {label}")
+
+            sections.append(build_division_section(label, fixtures))
+
+    html = f"""<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>YFL Weekly Form Guide - U11</title>
+<title>YFL U11 Weekly Form Guide</title>
 </head>
 <body>
-<h1>YFL Weekly Form Guide - U11</h1>
-<p>Generated {generated} | Week ID {week_id}</p>
-{body}
+<h1>YFL U11 Weekly Form Guide</h1>
+<p>Generated: {today}</p>
+{''.join(sections)}
 </body>
-</html>"""
+</html>
+"""
 
-# ---------------- ENTRY POINT ----------------
-
-async def scrape_all_divisions(*args, **kwargs):
-    today = date.today().isoformat()
-    sections = []
-    div3_inline = ""
-
-    async with aiohttp.ClientSession() as session:
-        for league_id, label in LEAGUES:
-            week_id = await resolve_current_week_id(session, league_id)
-            standings = await fetch_standings(session, league_id)
-            fixtures = await fetch_fixtures(session, league_id, week_id)
-
-            section = wrap_division(
-                label,
-                build_standings_html(standings),
-                build_fixtures_html(week_id, fixtures),
-            )
-            sections.append(section)
-
-            if league_id == 92:
-                div3_inline = build_page(section, today, week_id)
-
-    full_html = build_page("".join(sections), today, week_id)
-    return full_html, div3_inline, f"yfl_u11_form_guide_{today}.html"
+    return html, None, f"yfl_u11_form_guide_{today}.html"
