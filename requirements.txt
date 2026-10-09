@@ -1,9 +1,7 @@
-playwright
-bs4
+# What the code actually imports (the old file also listed playwright, nest_asyncio and the
+# Google API libraries, none of which are used any more).
+# Last verified with Python 3.12, pandas 3.0, aiohttp, beautifulsoup4 and python-dateutil as of October 2026.
+aiohttp
 pandas
+beautifulsoup4
 python-dateutil
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-nest_asyncio
-aiohttp>=3.9.0

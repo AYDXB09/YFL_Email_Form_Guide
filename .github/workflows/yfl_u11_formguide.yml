@@ -6,57 +6,43 @@ on:
     - cron: "0 14 * * TUE"
   workflow_dispatch:
 
+permissions:
+  contents: read        # the job only needs to read this repository
+
+# A manual run must not overlap the scheduled one (each run sends an email).
+concurrency:
+  group: yfl-form-guide
+  cancel-in-progress: false
+
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------------------
-      # 1) Check out repo
-      # -----------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------
-      # 2) Setup Python
-      # -----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # -----------------------------------------------------
-      # 3) Install Python dependencies
-      # -----------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install chromium
 
-      # -----------------------------------------------------
-      # 4) Debug EMAIL_RECEIVER (SAFE)
-      # -----------------------------------------------------
-      - name: Debug EMAIL_RECEIVER
-        run: echo "EMAIL_RECEIVER=[$EMAIL_RECEIVER]"
-        env:
-          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+      - name: Run offline tests (no network, no secrets)
+        run: python -m unittest -v
 
-      # -----------------------------------------------------
-      # 5) Export Environment Variables
-      # -----------------------------------------------------
-      - name: Export Environment Variables
-        run: |
-          echo "YFL_USERNAME=${{ secrets.YFL_USERNAME }}" >> $GITHUB_ENV
-          echo "YFL_PASSWORD=${{ secrets.YFL_PASSWORD }}" >> $GITHUB_ENV
-          echo "EMAIL_RECEIVER=${{ secrets.EMAIL_RECEIVER }}" >> $GITHUB_ENV
-          echo "EMAIL_SUBJECT=YFL Weekly Form Guide — U11" >> $GITHUB_ENV
-          echo "SMTP_USER=${{ secrets.SMTP_USER }}" >> $GITHUB_ENV
-          echo "SMTP_PASS=${{ secrets.SMTP_PASS }}" >> $GITHUB_ENV
-          echo "SPORTSTACK_API_TOKEN=${{ secrets.SPORTSTACK_API_TOKEN }}" >> $GITHUB_ENV
-
-      # -----------------------------------------------------
-      # 6) Run Python Script
-      # -----------------------------------------------------
-      - name: Run Scraper
+      # Secrets are handed to the script through `env:`, never interpolated into shell commands:
+      # a secret containing a quote, `$(...)` or a newline cannot break out of the command or
+      # inject other variables, and the old "debug" step that echoed EMAIL_RECEIVER is gone.
+      - name: Build the form guide and email it
         run: python main.py
+        env:
+          SPORTSTACK_API_TOKEN: ${{ secrets.SPORTSTACK_API_TOKEN }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_SUBJECT: "YFL Weekly Form Guide — U11"
