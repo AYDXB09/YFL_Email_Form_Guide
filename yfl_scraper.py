@@ -40,6 +40,13 @@ async def _scrape_division(session, tournament_id: int, label: str):
         # Original scraper removed "(D1)/(D2)/(D3)" suffixes
         return re.sub(r"\(D\d+\)", "", name or "").strip()
 
+    def _score(value):
+        """A score as an int, or None if it is missing/blank/not a number (the API may send "2" or 2)."""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _week_no(week_name: str) -> int:
         m = re.search(r"Week\s*(\d+)", week_name or "")
         return int(m.group(1)) if m else 0
@@ -102,14 +109,18 @@ async def _scrape_division(session, tournament_id: int, label: str):
                 dt_str = ""
 
         is_voided = bool(f.get("is_voided")) or bool(f.get("is_canceled"))
-        hs = f.get("home_team_score")
-        sa = f.get("away_team_score")
+        hs = _score(f.get("home_team_score"))
+        sa = _score(f.get("away_team_score"))
 
         # Determine status
         if is_voided:
             status = "voided"
-        elif f.get("has_finished") or (hs is not None and sa is not None):
+        elif hs is not None and sa is not None:
             status = "played"
+        elif f.get("has_finished"):
+            # Finished but no score recorded (walkover / data lag). The table cannot count it, so the
+            # form guide must not invent a result for it either (it used to show a draw).
+            status = "unscored"
         else:
             status = "scheduled"
 
@@ -258,10 +269,10 @@ async def _scrape_division(session, tournament_id: int, label: str):
                     "week": wk,
                     "date": dstr,
                 })
-            elif f["status"] == "scheduled":
+            elif f["status"] in ("scheduled", "unscored"):
                 form_timeline[team].append({
                     "result": "N",
-                    "reason": "scheduled",
+                    "reason": f["status"],
                     "opponent": opp,
                     "score": score_str,
                     "week": wk,
@@ -288,76 +299,22 @@ async def _scrape_division(session, tournament_id: int, label: str):
                     "date": dstr,
                 })
 
-       # ------------------ NEXT FIXTURE ------------------
+    # ------------------ NEXT FIXTURE ------------------
     next_fix = {t: None for t in teams}
-    df_fix_all = pd.DataFrame(all_fixtures)
-    
-    df_fix_all["match_date"] = pd.to_datetime(df_fix_all["week_date"]).dt.date
-    df_fix_all["match_date_str"] = df_fix_all["week_date"].apply(
-        lambda d: d.strftime("%d %b %Y") if d else ""
+    today_date = date.today()
+    upcoming = sorted(
+        (f for f in all_fixtures
+         if f["status"] == "scheduled" and f["week_date"] and f["week_date"] >= today_date),
+        key=lambda f: f["week_date"],
     )
-    
-    future = df_fix_all[
-        (df_fix_all["status"] == "scheduled")
-        & df_fix_all["match_date"].notnull()
-        & (df_fix_all["match_date"] >= date.today())
-    ]
-    
     for team in teams:
-        sub = future[(future["home"] == team) | (future["away"] == team)]
-        if sub.empty:
-            continue
-        row = sub.sort_values("match_date").iloc[0]
-        opp = row["away"] if row["home"] == team else row["home"]
-        next_fix[team] = {
-            "opponent": opp,
-            "week": int(row["week"]),
-            "date": row["match_date_str"],
-        }
-        
-    # ------------------ CROSS-CHECK (optional) ------------------
-    if all_results:
-        df_res = pd.DataFrame(all_results)
-        df_res["match_date"] = pd.to_datetime(df_res["week_date"]).dt.date
-
-        comp = {t: {"P": 0, "W": 0, "D": 0, "L": 0, "GF": 0, "GA": 0, "PTS": 0}
-                for t in teams}
-        for _, r in df_res.iterrows():
-            md = r["match_date"]
-            if not md or md > date.today():
-                continue
-            h = r["home"]
-            a = r["away"]
-            sh = r["score_home"]
-            sa = r["score_away"]
-            rh = r["result_home"]
-            ra = r["result_away"]
-
-            for t, gf, ga, res in ((h, sh, sa, rh), (a, sa, sh, ra)):
-                if t not in comp:
-                    continue
-                comp[t]["P"] += 1
-                comp[t]["GF"] += gf
-                comp[t]["GA"] += ga
-                if res == "W":
-                    comp[t]["W"] += 1
-                    comp[t]["PTS"] += 3
-                elif res == "D":
-                    comp[t]["D"] += 1
-                    comp[t]["PTS"] += 1
-                else:
-                    comp[t]["L"] += 1
-
-        print("\n🧪 Cross-checking computed vs official stats (for your info)…")
-        for team, off in official_stats.items():
-            c = comp.get(team)
-            if not c:
-                continue
-            off_tuple = (off["P"], off["W"], off["D"], off["L"], off["GF"], off["GA"], off["PTS"])
-            comp_tuple = (c["P"], c["W"], c["D"], c["L"], c["GF"], c["GA"], c["PTS"])
-            if off_tuple != comp_tuple:
-                print("⚠", team, "official=", off_tuple, "computed=", comp_tuple)
-        print("✅ Cross-check complete (display still uses OFFICIAL numbers).")
+        nxt = next((f for f in upcoming if team in (f["home"], f["away"])), None)
+        if nxt:
+            next_fix[team] = {
+                "opponent": nxt["away"] if nxt["home"] == team else nxt["home"],
+                "week": int(nxt["week"]),
+                "date": nxt["week_date_str"],
+            }
 
     # ------------------ BUILD TABLE ROWS ------------------
     table_df = pd.DataFrame(list(official_stats.values()))
@@ -422,6 +379,11 @@ async def _scrape_division(session, tournament_id: int, label: str):
                         f"Not yet played (scheduled)\nvs {opp}\n"
                         f"Week {wk} — {dstr}"
                     )
+                elif reason == "unscored":
+                    tip = (
+                        f"Finished, but no score was recorded\nvs {opp}\n"
+                        f"Week {wk} — {dstr}"
+                    )
                 else:
                     tip = f"No match played\nWeek {wk} — {dstr}"
             elif res == "V":
@@ -484,18 +446,18 @@ async def _scrape_division(session, tournament_id: int, label: str):
 
 
 
-async def scrape_all_divisions(username: str, password: str):
+async def scrape_all_divisions(username: str | None = None, password: str | None = None):
     """Build full HTML + inline Division 3 HTML using API (no UI scraping).
 
     Keeps existing output structure and styling unchanged.
     """
-    # username/password kept for backwards compatibility with main.py/env usage.
-    # API auth uses SPORTSTACK_API_TOKEN.
+    # username/password are unused (kept so old callers still work); no login happens.
+    # The API is authenticated with SPORTSTACK_API_TOKEN.
     token = os.environ.get("SPORTSTACK_API_TOKEN")
     if not token:
         raise RuntimeError("Missing SPORTSTACK_API_TOKEN (set it as a GitHub repo secret).")
 
-    print("🔐 Using provided YFL credentials for login.")
+    print("🔐 Authenticating to the Sportstack API with SPORTSTACK_API_TOKEN (no website login).")
     divisions_data = []
 
     headers = {

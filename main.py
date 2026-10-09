@@ -7,12 +7,6 @@ from yfl_scraper import scrape_all_divisions
 from email_sender import send_report_email
 
 async def main():
-    # --- YFL login credentials ---
-    yfl_username = os.environ.get("YFL_USERNAME")
-    yfl_password = os.environ.get("YFL_PASSWORD")
-    if not yfl_username or not yfl_password:
-        raise RuntimeError("YFL_USERNAME and/or YFL_PASSWORD are not set")
-
     # --- Email receiver(s) ---
     receiver_env = os.environ.get("EMAIL_RECEIVER")
     if not receiver_env:
@@ -21,9 +15,8 @@ async def main():
 
     # --- Scrape YFL + build HTML (full + inline Div 3) ---
     print("⚽ Starting YFL scrape + HTML build…")
-    full_html, inline_div3_html, output_filename = await scrape_all_divisions(
-        yfl_username, yfl_password
-    )
+    # (No website login happens: the scraper authenticates with SPORTSTACK_API_TOKEN.)
+    full_html, inline_div3_html, output_filename = await scrape_all_divisions()
     # Ensure inline_div3_html is always a string
     inline_div3_html = inline_div3_html or ""
 
