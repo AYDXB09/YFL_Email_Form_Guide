@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Never commit credentials -- they belong in GitHub Actions secrets
+.env
+.env.*
+client_secret*.json
+*token*.json
+
+# The generated report (main.py writes it to the working directory)
+*form_guide*.html
+
+# macOS
+.DS_Store
