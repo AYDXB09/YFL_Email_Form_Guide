@@ -113,7 +113,7 @@ class StandingsTests(unittest.TestCase):
 class AwkwardDataTests(unittest.TestCase):
     def test_a_finished_match_with_no_score_is_not_invented_as_a_draw(self):
         # has_finished but no score recorded (walkover / data lag). The table can't count it, so the
-        # form guide must not show a result for it either; it used to show a draw ("D").
+        # form guide must not show a result for it either (in particular not a draw, "D").
         result = asyncio.run(yfl_scraper._scrape_division(
             FakeSession([fx(1, "A", "B", 2, 0, -14), fx(2, "A", "B", None, None, -7, has_finished=True),
                          fx(3, "C", "D", 1, 0, -1)]), 90, "U11 Division 1"))      # a later played week keeps week 2 in the form
@@ -125,7 +125,7 @@ class AwkwardDataTests(unittest.TestCase):
         self.assertIn("no score was recorded", badges[1]["title"])
 
     def test_no_fixture_has_a_date_yet_does_not_crash(self):
-        # start of season, dates still TBC: this used to raise a pandas TypeError and kill the whole run
+        # start of season, dates still TBC: must not raise (a pandas date comparison fails on all-empty dates)
         rows = build([{**fx(1, "A", "B", 1, 0), "date": None}])
         self.assertEqual([r["team"] for r in rows], ["A", "B"])
 

@@ -119,7 +119,7 @@ async def _scrape_division(session, tournament_id: int, label: str):
             status = "played"
         elif f.get("has_finished"):
             # Finished but no score recorded (walkover / data lag). The table cannot count it, so the
-            # form guide must not invent a result for it either (it used to show a draw).
+            # form guide must not invent a result for it either (e.g. a draw).
             status = "unscored"
         else:
             status = "scheduled"

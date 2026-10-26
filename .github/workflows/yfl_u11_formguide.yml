@@ -37,7 +37,7 @@ jobs:
 
       # Secrets are handed to the script through `env:`, never interpolated into shell commands:
       # a secret containing a quote, `$(...)` or a newline cannot break out of the command or
-      # inject other variables, and the old "debug" step that echoed EMAIL_RECEIVER is gone.
+      # inject other variables.
       - name: Build the form guide and email it
         run: python main.py
         env:

@@ -8,8 +8,6 @@
 
 > [!NOTE]
 > **Unofficial.** Not affiliated with YFL or Sportstack. It reads the fixtures API that the YFL LeagueHub site is built on, using a token from **your own** account; follow the league's terms of use.
->
-> GitHub **automatically disables scheduled workflows in a repository with no activity for 60 days.** If the Actions tab shows this workflow as disabled, click **Enable workflow** to resume the weekly email.
 
 Every week this builds a **form guide** for the YFL Dubai Under-11 divisions and emails it: the full league table plus a result-by-result run of **W / D / L** for every team, each team's **next fixture**, and a dark-themed HTML report attached for all three divisions. It runs for free on GitHub Actions.
 
@@ -53,12 +51,12 @@ These cases are asserted by the test suite, using made-up fixtures that can be c
 |---|---|
 | A 3–0 B, C 1–1 D, A 2–2 C, B 1–0 D | A: P2 W1 D1 GF 5 GA 2 **+3 · 4 pts** ranks 1st; B 3 pts; C 2 pts; D 1 pt |
 | A beat B 2–0, then a 5–0 "win" over C is **voided** | A's table shows only the 2–0; the form shows **W V** |
-| A finished a match but **no score was recorded** | not counted in the table, and shown as **N** with a tooltip — it used to appear as a **draw** |
+| A finished a match but **no score was recorded** | not counted in the table, and shown as **N** with a tooltip (never as a draw) |
 | Two sides tied on points, goal difference and goals | ordered by name, and their positions agree with the display order |
 | Scores sent as text, `"10"` v `"9"` | compared as numbers (A wins), not as strings |
-| Every fixture's date still "TBC" (start of a season) | builds the table; it used to crash the whole run |
+| Every fixture's date still "TBC" (start of a season) | builds the table normally |
 | The API answers 401 | the run stops with a clear error and no email goes out |
-| `YFL_USERNAME` / `YFL_PASSWORD` not set | fine — they were required but never used |
+| No website login | the scraper authenticates with the API token only, so no YFL username or password is needed |
 
 ## Configuration
 
@@ -71,7 +69,7 @@ Add these under **Settings → Secrets and variables → Actions → Secrets**:
 | `SMTP_USER` | The Gmail address the report is sent from |
 | `SMTP_PASS` | A Gmail **app password** (not your normal password) for that address |
 
-`YFL_USERNAME`, `YFL_PASSWORD` and `CLIENT_SECRET_JSON` are **no longer used** — if they still exist in your repository settings you can delete them.
+The scraper does not log in to the website, so no YFL username or password is needed.
 
 ## Setup
 
@@ -116,11 +114,10 @@ python -m unittest -v
 - **A team that plays twice in one week** has both matches counted in the table, but only the first appears in its form run.
 - **A division with no played match yet** produces an empty table; teams only appear once they have a result.
 - **The attached report loads club logos from the web** when opened, so the sender of those images can see that it was opened. The email body itself uses small inline logos the same way.
-- **The schedule pauses itself** after 60 days of repository inactivity (see the note at the top). GitHub emails the person who last edited the schedule when a scheduled run fails, depending on their notification settings.
 
 ## Security & privacy
 
-- Credentials are GitHub **Actions secrets**, handed to the script as environment variables. Earlier versions copied them into the environment through shell `echo` commands and had a "debug" step that echoed the recipient secret into the run log (GitHub masks it, but there was no reason to print it); both are gone.
+- Credentials are GitHub **Actions secrets**, handed to the script as environment variables.
 - The workflow's token is read-only (`permissions: contents: read`).
 - The data is public league information — club names, scores and dates. No player names or personal data are collected or stored, and nothing is kept in this repository.
 - The only recipients are the addresses in `EMAIL_RECEIVER`.
